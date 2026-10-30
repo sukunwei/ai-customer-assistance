@@ -112,5 +112,38 @@ console.log('10. minStrongHits 可调');
   check('minStrongHits=1 时弱命中被滤', strict.length === 0, strict.map(f => f.question).join(' / '));
 }
 
+console.log('11. 口语说法能通过关键词命中（keywords 字段的职责）');
+{
+  // 「东西寄到哪了」这类说法不含「物流/快递」，靠 FAQ 的 keywords 补全才能命中
+  const a = rankFaq(FAQS, '东西寄到哪了', { limit: 3 });
+  check(
+    '「东西寄到哪了」命中查物流',
+    a.some(f => f.question.includes('查物流')),
+    a.map(f => f.question).join(' / ')
+  );
+
+  const b = rankFaq(FAQS, '我的包裹到哪儿了', { limit: 3 });
+  check(
+    '「我的包裹到哪儿了」命中查物流',
+    b.some(f => f.question.includes('查物流')),
+    b.map(f => f.question).join(' / ')
+  );
+
+  const c = rankFaq(FAQS, '不想要了', { limit: 3 });
+  check(
+    '「不想要了」命中取消订单',
+    c.some(f => f.question.includes('取消订单')),
+    c.map(f => f.question).join(' / ')
+  );
+
+  // 不能用「取消」这种裸词：会让「怎么取消退款」误命中「取消订单」
+  const d = rankFaq(FAQS, '怎么取消退款', { limit: 3 });
+  check(
+    '「怎么取消退款」不命中取消订单',
+    !d.some(f => f.question.includes('取消订单')),
+    d.map(f => f.question).join(' / ')
+  );
+}
+
 console.log(`\n${failures === 0 ? '全部通过' : `${failures} 个断言失败`}（${checks - failures}/${checks}）`);
 process.exit(failures === 0 ? 0 : 1);
