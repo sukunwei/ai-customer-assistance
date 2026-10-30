@@ -1,6 +1,6 @@
 import { Loading } from 'tdesign-react';
 import { ChatMarkdown } from '@tdesign-react/chat';
-import { User, Bot } from 'lucide-react';
+import { User, Bot, AlertCircle } from 'lucide-react';
 import { Message, Model, PermissionRequest, ContentBlock } from '../types';
 import { ToolCallsCollapse } from './ToolCallsCollapse';
 import { InlinePermissionCard } from './InlinePermissionCard';
@@ -65,6 +65,27 @@ export function ChatMessages({
           toolCalls={[block.toolCall]}
           isStreaming={isStreaming && block.toolCall.status === 'running'}
         />
+      );
+    } else if (block.type === 'error') {
+      return (
+        <div
+          key={`error-${index}`}
+          className="px-4 py-3 leading-relaxed break-words"
+          style={{
+            backgroundColor: 'var(--td-error-color-light)',
+            border: '1px solid var(--td-error-color)',
+            borderRadius: '16px 16px 4px 16px',
+            color: 'var(--td-error-color)'
+          }}
+        >
+          <div className="flex items-start gap-2">
+            <AlertCircle size={16} className="mt-1 shrink-0" />
+            <div className="min-w-0">
+              <div className="font-semibold">出错了</div>
+              <div className="mt-1 whitespace-pre-wrap">{block.text}</div>
+            </div>
+          </div>
+        </div>
       );
     }
     return null;

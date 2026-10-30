@@ -22,10 +22,15 @@ import {
   RefreshIcon
 } from 'tdesign-icons-react';
 import { Bot, Sparkles, Code, FileText, Globe, Lightbulb } from 'lucide-react';
-import { CustomAgent, PermissionMode } from '../types';
+import { CustomAgent, PermissionMode, ProviderId, ProviderInfo } from '../types';
 
 interface SettingsPageProps {
   agents: CustomAgent[];
+  provider: ProviderId | '';
+  effectiveProvider: ProviderId;
+  serverProvider: ProviderId;
+  providers: ProviderInfo[];
+  onProviderChange: (provider: ProviderId | '') => void;
   onAdd: (agent: Omit<CustomAgent, 'id' | 'createdAt' | 'updatedAt'>) => CustomAgent;
   onUpdate: (id: string, updates: Partial<Omit<CustomAgent, 'id' | 'createdAt'>>) => void;
   onDelete: (id: string) => void;
@@ -46,6 +51,7 @@ interface LoginStatus {
     authToken?: string;
     internetEnv?: string;
     baseUrl?: string;
+    model?: string;
   };
 }
 
@@ -101,11 +107,16 @@ const PRESET_TEMPLATES = [
   },
 ];
 
-export function SettingsPage({ 
-  agents, 
-  onAdd, 
-  onUpdate, 
-  onDelete 
+export function SettingsPage({
+  agents,
+  provider,
+  effectiveProvider,
+  serverProvider,
+  providers,
+  onProviderChange,
+  onAdd,
+  onUpdate,
+  onDelete
 }: SettingsPageProps) {
   const [editingAgent, setEditingAgent] = useState<CustomAgent | null>(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -123,7 +134,10 @@ export function SettingsPage({
     isLoggedIn: false,
     checking: true,
   });
-  
+
+  // 各 provider 的登录状态
+  const [providerStatus, setProviderStatus] = useState<Record<string, LoginStatus>>({});
+
   // 环境变量配置
   const [showEnvConfig, setShowEnvConfig] = useState(false);
   const [envConfig, setEnvConfig] = useState({
@@ -134,14 +148,23 @@ export function SettingsPage({
   });
   const [savingEnv, setSavingEnv] = useState(false);
 
+  // Claude Code (MiniMax) 环境变量配置
+  const [showClaudeEnvConfig, setShowClaudeEnvConfig] = useState(false);
+  const [claudeEnvConfig, setClaudeEnvConfig] = useState({
+    authToken: '',
+    baseUrl: 'https://api.minimax.io/anthropic',
+    model: 'MiniMax-M3.1-Flash',
+  });
+  const [savingClaudeEnv, setSavingClaudeEnv] = useState(false);
+
   // 检查登录状态
   const checkLoginStatus = useCallback(async () => {
     setLoginStatus(prev => ({ ...prev, checking: true, error: undefined }));
-    
+
     try {
-      const response = await fetch('/api/check-login');
+      const response = await fetch(`/api/check-login?provider=${effectiveProvider}`);
       const data = await response.json();
-      
+
       setLoginStatus({
         isLoggedIn: data.isLoggedIn,
         checking: false,
@@ -152,6 +175,13 @@ export function SettingsPage({
         apiKey: data.apiKey,
         envVars: data.envVars,
       });
+
+      if (data.providers) {
+        setProviderStatus({
+          claude: { ...data.providers.claude, checking: false },
+          codebuddy: { ...data.providers.codebuddy, checking: false },
+        });
+      }
     } catch (error: any) {
       setLoginStatus({
         isLoggedIn: false,
@@ -159,8 +189,8 @@ export function SettingsPage({
         error: error?.message || '检查登录状态失败',
       });
     }
-  }, []);
-  
+  }, [effectiveProvider]);
+
   // 保存环境变量配置
   const saveEnvConfig = async () => {
     // 至少需要配置一个有效的值
@@ -169,7 +199,7 @@ export function SettingsPage({
       MessagePlugin.warning('请至少配置 API Key 或 Auth Token');
       return;
     }
-    
+
     setSavingEnv(true);
     try {
       const response = await fetch('/api/save-env-config', {
@@ -182,9 +212,9 @@ export function SettingsPage({
           baseUrl: envConfig.baseUrl.trim() || undefined,
         }),
       });
-      
+
       const data = await response.json();
-      
+
       if (data.success) {
         MessagePlugin.success(data.message);
         setShowEnvConfig(false);
@@ -198,6 +228,42 @@ export function SettingsPage({
       MessagePlugin.error(error?.message || '保存失败');
     } finally {
       setSavingEnv(false);
+    }
+  };
+
+  // 保存 Claude Code (MiniMax) 环境变量配置
+  const saveClaudeEnvConfig = async () => {
+    if (!claudeEnvConfig.authToken.trim()) {
+      MessagePlugin.warning('请填写 MiniMax API Key');
+      return;
+    }
+
+    setSavingClaudeEnv(true);
+    try {
+      const response = await fetch('/api/save-env-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          anthropicAuthToken: claudeEnvConfig.authToken.trim(),
+          anthropicBaseUrl: claudeEnvConfig.baseUrl.trim() || undefined,
+          anthropicModel: claudeEnvConfig.model.trim() || undefined,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        MessagePlugin.success(data.message);
+        setShowClaudeEnvConfig(false);
+        setClaudeEnvConfig(prev => ({ ...prev, authToken: '' }));
+        checkLoginStatus();
+      } else {
+        MessagePlugin.error(data.error || '保存失败');
+      }
+    } catch (error: any) {
+      MessagePlugin.error(error?.message || '保存失败');
+    } finally {
+      setSavingClaudeEnv(false);
     }
   };
 
@@ -253,6 +319,7 @@ export function SettingsPage({
     setFormData({
       ...template,
       description: template.description,
+      permissionMode: 'default',
     });
     setIsCreating(true);
   };
@@ -289,21 +356,21 @@ export function SettingsPage({
         <div>
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h2 
+              <h2
                 className="text-lg font-medium"
                 style={{ color: 'var(--td-text-color-primary)' }}
               >
                 登录配置
               </h2>
-              <p 
+              <p
                 className="text-sm mt-1"
                 style={{ color: 'var(--td-text-color-secondary)' }}
               >
-                支持环境变量或 CodeBuddy CLI 登录
+                支持 Claude Code (MiniMax) 与 CodeBuddy 双 Provider
               </p>
             </div>
-            <Button 
-              variant="text" 
+            <Button
+              variant="text"
               icon={<RefreshIcon />}
               onClick={checkLoginStatus}
               loading={loginStatus.checking}
@@ -311,7 +378,41 @@ export function SettingsPage({
               刷新
             </Button>
           </div>
-          
+
+          {/* Provider 选择 */}
+          <div className="mb-6">
+            <h3
+              className="text-sm font-medium mb-3"
+              style={{ color: 'var(--td-text-color-secondary)' }}
+            >
+              Provider
+            </h3>
+            <Select
+              size="small"
+              value={provider}
+              onChange={(v) => onProviderChange((v as ProviderId | '') || '')}
+              style={{ width: '100%' }}
+              options={[
+                {
+                  label: `跟随服务端默认（${serverProvider === 'claude' ? 'Claude Code (MiniMax)' : 'CodeBuddy'}）`,
+                  value: '',
+                },
+                ...providers.map(p => ({ label: p.name, value: p.id })),
+              ]}
+            />
+            <p
+              className="text-xs mt-2"
+              style={{ color: 'var(--td-text-color-placeholder)' }}
+            >
+              当前生效：{providers.find(p => p.id === effectiveProvider)?.name || effectiveProvider}
+              {providers.find(p => p.id === effectiveProvider)?.description && (
+                <span style={{ marginLeft: 6 }}>
+                  · {providers.find(p => p.id === effectiveProvider)?.description}
+                </span>
+              )}
+            </p>
+          </div>
+
           {/* 当前状态 */}
           <div className="flex items-center gap-3 mb-6">
             {loginStatus.checking ? (
@@ -323,9 +424,9 @@ export function SettingsPage({
               </>
             ) : loginStatus.isLoggedIn ? (
               <>
-                <CheckCircleFilledIcon 
-                  size="20px" 
-                  style={{ color: 'var(--td-success-color)' }} 
+                <CheckCircleFilledIcon
+                  size="20px"
+                  style={{ color: 'var(--td-success-color)' }}
                 />
                 <span style={{ color: 'var(--td-text-color-primary)' }}>
                   已登录
@@ -334,7 +435,7 @@ export function SettingsPage({
                   {loginStatus.method === 'env' ? '环境变量' : 'CLI'}
                 </Tag>
                 {loginStatus.method === 'env' && loginStatus.apiKey && (
-                  <span 
+                  <span
                     className="text-sm font-mono"
                     style={{ color: 'var(--td-text-color-secondary)' }}
                   >
@@ -344,9 +445,9 @@ export function SettingsPage({
               </>
             ) : (
               <>
-                <CloseCircleFilledIcon 
-                  size="20px" 
-                  style={{ color: 'var(--td-text-color-placeholder)' }} 
+                <CloseCircleFilledIcon
+                  size="20px"
+                  style={{ color: 'var(--td-text-color-placeholder)' }}
                 />
                 <span style={{ color: 'var(--td-text-color-secondary)' }}>
                   未登录
@@ -354,21 +455,125 @@ export function SettingsPage({
               </>
             )}
           </div>
-          
-          {/* 环境变量配置 */}
+
+          {/* Claude Code (MiniMax) 环境变量配置 */}
           <div className="mb-6">
-            <h3 
+            <h3
               className="text-sm font-medium mb-3"
               style={{ color: 'var(--td-text-color-secondary)' }}
             >
-              方式一：环境变量
+              方式一：Claude Code (MiniMax) 环境变量
             </h3>
-            
+
+            {showClaudeEnvConfig ? (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label
+                      className="text-xs block mb-1"
+                      style={{ color: 'var(--td-text-color-placeholder)' }}
+                    >
+                      ANTHROPIC_AUTH_TOKEN
+                    </label>
+                    <Input
+                      type="password"
+                      size="small"
+                      value={claudeEnvConfig.authToken}
+                      onChange={(v) => setClaudeEnvConfig(prev => ({ ...prev, authToken: v as string }))}
+                      placeholder="MiniMax API Key"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      className="text-xs block mb-1"
+                      style={{ color: 'var(--td-text-color-placeholder)' }}
+                    >
+                      ANTHROPIC_BASE_URL
+                    </label>
+                    <Input
+                      size="small"
+                      value={claudeEnvConfig.baseUrl}
+                      onChange={(v) => setClaudeEnvConfig(prev => ({ ...prev, baseUrl: v as string }))}
+                      placeholder="Anthropic 兼容端点"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      className="text-xs block mb-1"
+                      style={{ color: 'var(--td-text-color-placeholder)' }}
+                    >
+                      ANTHROPIC_MODEL
+                    </label>
+                    <Input
+                      size="small"
+                      value={claudeEnvConfig.model}
+                      onChange={(v) => setClaudeEnvConfig(prev => ({ ...prev, model: v as string }))}
+                      placeholder="MiniMax-M3.1-Flash"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="small"
+                    theme="primary"
+                    onClick={saveClaudeEnvConfig}
+                    loading={savingClaudeEnv}
+                  >
+                    保存
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="text"
+                    onClick={() => {
+                      setShowClaudeEnvConfig(false);
+                      setClaudeEnvConfig(prev => ({ ...prev, authToken: '' }));
+                    }}
+                  >
+                    取消
+                  </Button>
+                  <span
+                    className="text-xs"
+                    style={{ color: 'var(--td-text-color-placeholder)' }}
+                  >
+                    仅当前进程有效
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="outline"
+                  size="small"
+                  onClick={() => setShowClaudeEnvConfig(true)}
+                >
+                  配置环境变量
+                </Button>
+                {providerStatus.claude?.envVars?.model && (
+                  <span
+                    className="text-xs font-mono"
+                    style={{ color: 'var(--td-text-color-secondary)' }}
+                  >
+                    {providerStatus.claude.envVars.model}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* CodeBuddy 环境变量配置 */}
+          <div className="mb-6">
+            <h3
+              className="text-sm font-medium mb-3"
+              style={{ color: 'var(--td-text-color-secondary)' }}
+            >
+              方式二：CodeBuddy 环境变量
+            </h3>
+
             {showEnvConfig ? (
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label 
+                    <label
                       className="text-xs block mb-1"
                       style={{ color: 'var(--td-text-color-placeholder)' }}
                     >
@@ -383,7 +588,7 @@ export function SettingsPage({
                     />
                   </div>
                   <div>
-                    <label 
+                    <label
                       className="text-xs block mb-1"
                       style={{ color: 'var(--td-text-color-placeholder)' }}
                     >
@@ -398,7 +603,7 @@ export function SettingsPage({
                     />
                   </div>
                   <div>
-                    <label 
+                    <label
                       className="text-xs block mb-1"
                       style={{ color: 'var(--td-text-color-placeholder)' }}
                     >
@@ -417,7 +622,7 @@ export function SettingsPage({
                     />
                   </div>
                   <div>
-                    <label 
+                    <label
                       className="text-xs block mb-1"
                       style={{ color: 'var(--td-text-color-placeholder)' }}
                     >
@@ -432,17 +637,17 @@ export function SettingsPage({
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button 
+                  <Button
                     size="small"
-                    theme="primary" 
+                    theme="primary"
                     onClick={saveEnvConfig}
                     loading={savingEnv}
                   >
                     保存
                   </Button>
-                  <Button 
+                  <Button
                     size="small"
-                    variant="text" 
+                    variant="text"
                     onClick={() => {
                       setShowEnvConfig(false);
                       setEnvConfig({ apiKey: '', authToken: '', internetEnv: '', baseUrl: '' });
@@ -450,7 +655,7 @@ export function SettingsPage({
                   >
                     取消
                   </Button>
-                  <span 
+                  <span
                     className="text-xs"
                     style={{ color: 'var(--td-text-color-placeholder)' }}
                   >
@@ -459,8 +664,8 @@ export function SettingsPage({
                 </div>
               </div>
             ) : (
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 size="small"
                 onClick={() => setShowEnvConfig(true)}
               >
@@ -468,27 +673,27 @@ export function SettingsPage({
               </Button>
             )}
           </div>
-          
+
           {/* CLI 登录 */}
           <div>
-            <h3 
+            <h3
               className="text-sm font-medium mb-3"
               style={{ color: 'var(--td-text-color-secondary)' }}
             >
-              方式二：CodeBuddy CLI
+              方式三：CLI 登录
             </h3>
             <div className="flex items-center gap-3">
-              <code 
+              <code
                 className="px-3 py-1.5 rounded text-sm"
-                style={{ 
+                style={{
                   backgroundColor: 'var(--td-bg-color-component)',
                   color: 'var(--td-text-color-primary)'
                 }}
               >
                 codebuddy
               </code>
-              <Link 
-                href="https://www.codebuddy.ai/docs/zh/cli/settings" 
+              <Link
+                href="https://www.codebuddy.ai/docs/zh/cli/settings"
                 target="_blank"
                 theme="primary"
                 size="small"
@@ -497,9 +702,9 @@ export function SettingsPage({
               </Link>
             </div>
           </div>
-          
+
           {loginStatus.error && !loginStatus.isLoggedIn && (
-            <div 
+            <div
               className="text-xs mt-4"
               style={{ color: 'var(--td-text-color-placeholder)' }}
             >

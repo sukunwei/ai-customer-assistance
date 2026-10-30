@@ -1,8 +1,19 @@
 /**
- * 类型定义 - 智能客服 Agent
+ * 类型定义 - AI Customer Assistance
  */
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+
+/** Agent Provider：Claude Code（MiniMax）或 CodeBuddy */
+export type ProviderId = 'claude' | 'codebuddy';
+
+export interface ProviderInfo {
+  id: ProviderId;
+  name: string;
+  description: string;
+  defaultModel: string;
+  isActive: boolean;
+}
 
 /** 用户意图类型 */
 export type CustomerIntent = '退款' | '订单查询' | '技术支持' | '转人工' | '通用';
@@ -23,11 +34,13 @@ export interface ToolCall {
 }
 
 /**
- * 内容块类型 - 支持文字和工具调用按顺序排列
+ * 内容块类型 - 支持文字、工具调用、错误按顺序排列
  */
 export type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'tool_use'; toolCall: ToolCall };
+  | { type: 'tool_use'; toolCall: ToolCall }
+  /** 服务端返回的错误（或客户端捕获的异常），单独成块以便醒目展示 */
+  | { type: 'error'; text: string };
 
 export interface Message {
   id: string;
@@ -85,7 +98,7 @@ export interface PermissionResponse {
   message?: string;
 }
 
-// ============ 智能客服新增类型 ============
+// ============ AI 客服新增类型 ============
 
 /** FAQ 条目 */
 export interface FaqItem {

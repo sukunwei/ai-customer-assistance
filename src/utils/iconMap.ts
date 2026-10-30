@@ -1,14 +1,15 @@
-import { 
-  Bot, 
-  Code, 
+import {
+  Bot,
+  Code,
   Globe,
   Sparkles,
   FileText,
   Lightbulb
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
 // Icon 映射
-export const ICON_MAP: Record<string, React.ComponentType<{ size?: number; color?: string }>> = {
+export const ICON_MAP: Record<string, LucideIcon> = {
   Bot,
   Sparkles,
   Code,

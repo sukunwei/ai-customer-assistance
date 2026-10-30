@@ -18,7 +18,7 @@ interface PermissionDialogProps {
 }
 
 // 工具名称到图标和颜色的映射
-const TOOL_CONFIG: Record<string, { icon: React.ReactNode; color: string; label: string }> = {
+const TOOL_CONFIG: Record<string, { icon: React.ReactElement; color: string; label: string }> = {
   'Bash': { icon: <TerminalIcon />, color: '#e34d59', label: '执行命令' },
   'Write': { icon: <EditIcon />, color: '#0052d9', label: '写入文件' },
   'Edit': { icon: <EditIcon />, color: '#0052d9', label: '编辑文件' },
@@ -150,11 +150,8 @@ export function PermissionDialog({ visible, request, onAllow, onDeny }: Permissi
             </div>
           ) : inputItems.length > 0 ? (
             // 其他工具使用描述列表
-            <Descriptions 
-              column={1} 
-              itemStyle={{ 
-                paddingBottom: '8px'
-              }}
+            <Descriptions
+              column={1}
               labelStyle={{
                 width: '80px',
                 color: 'var(--td-text-color-secondary)'
@@ -166,9 +163,9 @@ export function PermissionDialog({ visible, request, onAllow, onDeny }: Permissi
               }}
             >
               {inputItems.map((item, index) => (
-                <Descriptions.Item key={index} label={item.label}>
+                <Descriptions.DescriptionsItem key={index} label={item.label}>
                   {item.content}
-                </Descriptions.Item>
+                </Descriptions.DescriptionsItem>
               ))}
             </Descriptions>
           ) : (

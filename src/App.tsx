@@ -6,6 +6,7 @@ import { useAgents } from './hooks/useAgents';
 import { useTheme } from './hooks/useTheme';
 import { useSessions } from './hooks/useSessions';
 import { useModels } from './hooks/useModels';
+import { useProvider } from './hooks/useProvider';
 import { useChat } from './hooks/useChat';
 import { PermissionMode } from './types';
 
@@ -36,7 +37,8 @@ function AppContent() {
   // Hooks
   const { theme, toggleTheme } = useTheme();
   const { agents, addAgent, updateAgent, deleteAgent, getAgent } = useAgents();
-  const { models, selectedModel, setSelectedModel, fetchModels } = useModels();
+  const { provider, effectiveProvider, setProvider, serverProvider, providers, fetchProviders } = useProvider();
+  const { models, selectedModel, setSelectedModel, fetchModels } = useModels(effectiveProvider);
   const {
     sessions,
     setSessions,
@@ -66,6 +68,7 @@ function AppContent() {
     currentSession,
     currentSessionId,
     selectedModel,
+    provider: effectiveProvider,
     getAgent,
     addSession,
     updateSession,
@@ -88,13 +91,17 @@ function AppContent() {
   }, [urlSessionId, isSettingsPage, isAdminPage, currentSessionId, setCurrentSessionId]);
 
   // 当切换会话时，恢复该会话的模型选择
+  // （会话里的模型可能属于另一个 provider，此时回退到当前 provider 的模型）
   useEffect(() => {
+    const isAvailable = (modelId: string) => models.some(m => m.modelId === modelId);
+
     if (currentSessionId && sessionModels[currentSessionId]) {
-      setSelectedModel(sessionModels[currentSessionId]);
+      const sessionModel = sessionModels[currentSessionId];
+      setSelectedModel(isAvailable(sessionModel) ? sessionModel : selectedModel);
     } else if (currentSession) {
-      setSelectedModel(currentSession.model);
+      setSelectedModel(isAvailable(currentSession.model) ? currentSession.model : selectedModel);
     }
-  }, [currentSessionId, sessionModels, currentSession, setSelectedModel]);
+  }, [currentSessionId, sessionModels, currentSession, models, selectedModel, setSelectedModel]);
 
   // 初始加载会话列表
   useEffect(() => {
@@ -186,6 +193,11 @@ function AppContent() {
         {isSettingsPage ? (
           <SettingsPage
             agents={agents}
+            provider={provider}
+            effectiveProvider={effectiveProvider}
+            serverProvider={serverProvider}
+            providers={providers}
+            onProviderChange={setProvider}
             onAdd={addAgent}
             onUpdate={updateAgent}
             onDelete={deleteAgent}

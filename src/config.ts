@@ -1,22 +1,22 @@
 /**
- * 应用配置文件 - 智能客服 Agent
+ * 应用配置文件 - AI Customer Assistance
  */
 
 export const APP_CONFIG = {
   /** 应用名称 */
-  name: '智能客服',
+  name: 'AI Customer Assistance',
 
   /** 应用名称首字母（用于 Logo） */
-  nameInitial: '客',
+  nameInitial: 'A',
 
   /** 应用描述 */
-  description: '您好，我是智能客服小智，请问有什么可以帮您？',
+  description: '您好，我是 AI Customer Assistance，请问有什么可以帮您？',
 
   /** 版本号 */
   version: '1.0.0',
 
   /** 客服名称 */
-  agentName: '小智',
+  agentName: 'AI Customer Assistance',
 };
 
 /** 意图标签颜色映射 */

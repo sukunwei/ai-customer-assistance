@@ -170,8 +170,12 @@ export function AdminPage() {
               <Card bordered>
                 <Statistic
                   title="平均评分"
-                  value={stats.ratingStats.avgScore || '-'}
-                  suffix={`/5 (${stats.ratingStats.total}评)`}
+                  value={stats.ratingStats.total ? stats.ratingStats.avgScore : 0}
+                  suffix={
+                    stats.ratingStats.total
+                      ? `/5 (${stats.ratingStats.total}评)`
+                      : '/5 (暂无评分)'
+                  }
                   prefix={<StarIcon size="20px" />}
                 />
               </Card>

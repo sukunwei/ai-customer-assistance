@@ -1,6 +1,6 @@
-# Web Agent 二次开发指南
+# AI Customer Assistance 二次开发指南
 
-这是一个基于 CodeBuddy Agent SDK 的完整 Web Agent 应用模板。本指南将帮助你理解项目结构并进行二次开发。
+这是一个基于 Claude Code Agent SDK（默认接入 MiniMax 模型，同时保留 CodeBuddy Provider）的完整 Web Agent 应用模板。本指南将帮助你理解项目结构并进行二次开发。
 
 ## 目录
 
@@ -19,7 +19,8 @@
 **后端**
 - Node.js + Express (RESTful API)
 - TypeScript
-- @tencent-ai/agent-sdk (Agent SDK)
+- @anthropic-ai/claude-agent-sdk (Claude Code Agent SDK，默认接入 MiniMax)
+- @tencent-ai/agent-sdk (CodeBuddy Agent SDK，备用 Provider)
 - better-sqlite3 (SQLite 数据库)
 
 **前端**
@@ -35,7 +36,24 @@ web-agent/
 ├── server/                     # 后端服务
 │   ├── index.ts               # Express 服务器入口
 │   ├── db.ts                  # 数据库操作
+│   ├── providers.ts           # Provider 抽象层（Claude Code / CodeBuddy）
+│   ├── faqSearch.ts           # FAQ 关键词打分排序
+│   ├── text.ts                # 繁简归一化
+│   ├── embeddings.ts          # 远程 embedding 客户端（MiniMax / OpenAI / Cloudflare 三协议）
+│   ├── vectorStore.ts         # sqlite-vec 向量存储
+│   ├── vectorizeStore.ts      # Cloudflare Vectorize 向量存储
+│   ├── retriever.ts           # 检索层：关键词 + 向量混合，RRF 融合
+│   ├── ragConfig.ts           # 向量检索配置
+│   ├── ragIndex.ts            # FAQ 向量索引
 │   └── index.d.ts             # 类型定义
+├── scripts/                   # 测试脚本（纯 tsx + assert，无测试框架）
+│   ├── test-embeddings.mts    # embedding 客户端单测
+│   ├── test-vector-store.mts  # 向量存储单测
+│   ├── test-retriever.mts     # RRF 融合单测
+│   ├── test-rag-config.mts    # 配置单测
+│   ├── test-rag-index.mts     # 索引单测
+│   ├── test-faq-search.mts    # 关键词检索回归（用数据库真实 FAQ）
+│   └── test-e2e-rag.mts       # 端到端（起真实服务 + 真实 embedding）
 ├── src/                       # 前端源码
 │   ├── components/            # React 组件
 │   │   ├── ChatMessages.tsx   # 消息列表
@@ -52,6 +70,9 @@ web-agent/
 │   │   ├── useModels.ts       # 模型管理
 │   │   ├── useAgents.ts       # Agent 管理
 │   │   └── useTheme.ts        # 主题管理
+│   ├── utils/                 # 纯工具函数
+│   │   ├── sseParser.ts       # SSE 增量解析（处理跨 chunk 事件与中文乱码）
+│   │   └── chatContent.ts     # 内容块构造（错误去重）
 │   ├── pages/                 # 页面
 │   │   └── ChatPage.tsx       # 聊天页面
 │   ├── types.ts               # TypeScript 类型定义
@@ -71,55 +92,55 @@ web-agent/
 
 ### 1. Agent SDK 集成
 
-**核心文件**: `server/index.ts`
+**核心文件**: `server/providers.ts`（Provider 抽象层）、`server/index.ts`（HTTP 层）
 
-SDK 提供三个主要 API：
+应用支持两套 Agent SDK，通过 `server/providers.ts` 统一封装：
 
-#### query() - 发送消息并流式接收响应
+| Provider | SDK | 说明 |
+|----------|-----|------|
+| `claude`（默认） | `@anthropic-ai/claude-agent-sdk` | Claude Code 运行时，通过 Anthropic 兼容端点调用 MiniMax |
+| `codebuddy` | `@tencent-ai/agent-sdk` | CodeBuddy 运行时 |
+
+两个 SDK 的 `query()` 签名一致，差异（工具结果的投递方式、结果字段命名等）在 provider 层归一化为统一的 `AgentEvent` 事件流。
+
+#### runAgent() - 统一的调用入口
 
 ```typescript
-import { query } from "@tencent-ai/agent-sdk";
+import { runAgent } from "./providers.js";
 
-const stream = query({
-  prompt: "用户的问题",
-  options: {
-    cwd: process.cwd(),           // 工作目录
-    model: "claude-sonnet-4",     // 模型选择
-    maxTurns: 10,                 // 最大对话轮数
-    systemPrompt: "系统提示词",    // 自定义系统提示
-    permissionMode: "default",    // 权限模式
-    canUseTool: async (toolName, input, options) => {
-      // 工具权限控制
-      return { behavior: 'allow', updatedInput: input };
-    },
-    resume: sessionId            // 恢复对话上下文
+const stream = runAgent("claude", "用户的问题", {
+  cwd: process.cwd(),           // 工作目录
+  model: "MiniMax-M3.1-Flash", // 模型选择
+  maxTurns: 10,                // 最大对话轮数
+  systemPrompt: "系统提示词",   // 自定义系统提示
+  permissionMode: "default",   // 权限模式
+  resume: sessionId,           // 恢复对话上下文（同 provider 才可复用）
+  canUseTool: async (toolName, input, options) => {
+    // 工具权限控制
+    return { behavior: 'allow', updatedInput: input };
   }
 });
 
-// 处理流式响应
-for await (const msg of stream) {
-  if (msg.type === "assistant") {
-    // 处理 AI 回复
-  } else if (msg.type === "tool_result") {
-    // 处理工具执行结果
-  }
+// 归一化后的事件流
+for await (const event of stream) {
+  // event.type: 'init' | 'text' | 'tool' | 'tool_result' | 'done' | 'error'
 }
 ```
 
-#### unstable_v2_createSession() - 创建 Agent 会话
+> 注意：两套 SDK 都把工具结果放在 `user` 消息的 `tool_result` block 里，而不是独立的
+> `tool_result` 消息类型。provider 层已统一处理，业务代码只需消费 `AgentEvent`。
+
+#### MiniMax 模型列表
 
 ```typescript
-import { unstable_v2_createSession } from "@tencent-ai/agent-sdk";
+import { fetchClaudeModels } from "./providers.js";
 
-const session = await unstable_v2_createSession({ 
-  cwd: process.cwd() 
-});
-
-// 获取可用模型
-const models = await session.getAvailableModels();
+// 实时拉取账号下可用的模型（失败时回退到内置列表）
+const models = await fetchClaudeModels();
+// → [{ modelId: "MiniMax-M3.1-Flash", name: "MiniMax-M3.1-Flash" }, ...]
 ```
 
-#### unstable_v2_authenticate() - 身份认证
+#### CodeBuddy 身份认证（仅 CodeBuddy Provider 使用）
 
 ```typescript
 import { unstable_v2_authenticate } from "@tencent-ai/agent-sdk";
@@ -131,6 +152,9 @@ const result = await unstable_v2_authenticate({
   }
 });
 ```
+
+> 该调用会访问 CodeBuddy 认证服务，可能长时间无响应，因此 provider 层只在真正使用
+> CodeBuddy 时才调用，并带 5 秒超时保护。
 
 ### 2. 数据库设计
 
@@ -218,7 +242,73 @@ while (true) {
 }
 ```
 
-### 4. 权限控制机制
+### 4. 客服 Agent 的行为约束
+
+**核心文件**: `server/index.ts`（提示词与工具禁用）、`server/providers.ts`（SDK 选项）、`server/faqSearch.ts`（检索）
+
+默认的 AI 客服 Agent 有一条硬约束：**它输出的每一句话都是直接发给客户看的正文**。
+
+早期版本没有这条约束，后果是——FAQ 没命中时客服会自己去跑 `Bash`/`Read` 翻项目文件，
+然后把「我先查一下知识库…查询结果显示数据库里没有订单表…检测到意图：订单查询」
+这段工程调试过程当成答复发给了客户。
+
+三层约束叠在一起解决这个问题：
+
+**① 禁用工具**（`server/providers.ts`）
+
+```typescript
+if (options.disableTools) {
+  // tools: [] 清空可用工具白名单 —— 模型根本看不到工具，不会去尝试调用
+  claudeOptions.tools = [];
+  // disallowedTools 再兜一层，因为 SDK 自己也说了 BUILTIN_TOOL_NAMES 并不完整
+  claudeOptions.disallowedTools = [...BUILTIN_TOOL_NAMES];
+}
+```
+
+服务端 `canUseTool` 里对客服一律 `deny`，作为 CodeBuddy 侧的兜底
+（CodeBuddy SDK 没有 `tools` 白名单选项，只有 `allowedTools`/`disallowedTools`）。
+客服模式还会强制 `permissionMode=default`——`bypassPermissions` 会让 SDK 直接跳过
+`canUseTool`，那样工具就真的执行了。
+
+光靠 SDK 选项**挡不干净**，实测：
+
+- CLI 会绕过 `disallowedTools` 直接调用它的占位工具 `DeferredToolPlaceholder`
+  （`BUILTIN_TOOL_NAMES` 里没有这个名字，得手写）
+- `tools: []` 只清空内置工具，管不到从本机 MCP 配置加载进来的工具
+  （实测会冒出 `mcp__plugin_figma_figma__whoami`），要用 `mcp__*` 通配符单独禁
+- 模型偶尔会自己决定去调工具，即使工具列表是空的
+
+所以服务端还有第三层：**客服模式下丢弃所有 tool / tool_result 事件**，
+既不推给前端也不入库，界面上就不会出现工具卡片。
+
+**模式判定依据是 `agentId`，不是 systemPrompt**：
+
+```typescript
+// server/index.ts
+const isCustomerService = !agentId || agentId === 'default';
+```
+
+前端每次发消息都会带上当前 agent 的提示词（包括内置 `default` 那个），
+所以用「请求里有没有 systemPrompt」来判断会让客服模式在界面路径上永远不生效——
+结果是模型拿不到 FAQ 上下文、不受输出边界约束，还会自己调 Bash 翻项目文件。
+
+**② 提示词约束**（`buildCustomerServicePrompt`）
+
+- 「输出边界」章节：禁止输出分析/检索/推理过程，禁止提 FAQ、意图识别、数据库、表结构
+- 正反例 few-shot：给出「把工作过程发给客户」的错误示例和正确写法
+- 「服务范围」章节：只负责售后问题，写作/编程/闲聊类请求要礼貌拒绝
+- FAQ 为空时给的是**兜底话术指令**，不是「请根据通用知识回答」——后者会直接诱导模型自由发挥
+
+**③ 检索质量**（`server/faqSearch.ts`）
+
+FAQ 检索从「整句 `LIKE`」改成「切词 + 打分排序」，详见 README 的「FAQ 检索」一节。
+检索不到就返回空，让模型走「查不到就转人工」的话术，而不是拿不相关的 FAQ 硬凑答案。
+
+> **默认客服与自定义 Agent 的区别**：由 `agentId` 区分——内置的 `default` agent 走客服模式
+> （用客服话术 + 注入 FAQ 上下文 + 禁用工具），用户自建的 Agent（编程助手、写作助手等）
+> 保留自己的提示词和工具能力。
+
+### 5. 权限控制机制
 
 **核心文件**: `server/index.ts`, `src/hooks/useChat.ts`
 
@@ -285,7 +375,7 @@ const handleAllow = async () => {
 };
 ```
 
-### 5. 会话恢复机制
+### 6. 会话恢复机制
 
 **核心文件**: `server/index.ts`, `server/db.ts`
 
@@ -315,7 +405,7 @@ for await (const msg of stream) {
 }
 ```
 
-### 6. 自定义 Agent 管理
+### 7. 自定义 Agent 管理
 
 **核心文件**: `src/hooks/useAgents.ts`, `src/types.ts`
 
@@ -338,6 +428,82 @@ export interface CustomAgent {
 const STORAGE_KEY = 'custom_agents';
 localStorage.setItem(STORAGE_KEY, JSON.stringify(agents));
 ```
+
+---
+
+### 8. 向量检索层（RAG）
+
+**核心文件**: `server/embeddings.ts`, `server/vectorStore.ts`, `server/retriever.ts`, `server/ragConfig.ts`, `server/ragIndex.ts`
+
+关键词与向量两路并行检索，用 RRF（Reciprocal Rank Fusion）融合：
+
+```
+提问 → toSimplified → detectIntent
+                        ↓
+        ┌───────────────┴───────────────┐
+   KeywordRetriever              VectorRetriever
+   （rankFaq 打分，纯本地）      （embedding + sqlite-vec）
+        └───────────────┬───────────────┘
+                 RRF 融合 → Top-K → faqContext → LLM
+```
+
+**为什么用 RRF**：只看排名不看分数，因此不需要把「关键词打分」和「余弦距离」
+归一化到同一量纲，也不用调融合权重。`score(doc) = Σ 1/(60 + rank)`。
+
+**两种向量库后端**（`VECTOR_STORE` 配置切换，实现同一个 `VectorStore` 接口）：
+
+| 后端 | 实测数据 | 注意 |
+|---|---|---|
+| `sqlite`（sqlite-vec，默认） | 136KB 二进制、查询 <1ms、写入立即可见 | 维度变化自动重建表 |
+| `vectorize`（Cloudflare 托管） | 查询 250-700ms、**写入约 60~100 秒后才可查** | 索引维度创建后不可改；写入后有一段「索引未生效」窗口，期间自动降级为关键词检索 |
+
+**Vectorize 的三个坑**（实测踩过）：
+
+1. **写入是异步的** —— 向量先写 WAL，异步 job 重建索引。刚 upsert 就查会返回 0 条，
+   所以 VectorizeStore 会记住最近一次写入时间，这段时间内查询直接降级，
+   而不是把「还没生效」误判成「没有相似文档」
+2. **索引维度创建后不可改** —— 换 embedding 模型（维度变了）必须删索引重建
+3. **REST API 不是 OpenAI 格式** —— 查询是 `POST .../vectorize/v2/indexes/{name}/query`，
+   写入是 `.../upsert`（NDJSON），响应是 `result.matches[].score`（相似度），
+   与 OpenAI 的 `data[].embedding` 完全不同
+4. **维度准备必须异步** —— Vectorize 要先查/建索引才知道维度，
+   所以 `VectorStore.prepare(dim)` 是 async；否则随后的写入会因「维度未知」全部失败
+
+**嵌入服务的坑**（实测踩过）：
+
+- MiniMax 用 **HTTP 200 + `base_resp.status_code != 0`** 表达错误，
+  只看 HTTP 状态码会把限流当成成功、拿到空向量
+- Cloudflare Workers AI 用 **HTTP 200 + `success: false` + `errors[]`** 表达错误
+- `vectors: null` / `result.data: []` 也是 HTTP 200，必须当作失败处理
+- 限流码是 `1002`，触发指数退避重试；查询路径最多重试 2 次（约 3 秒），
+  **不能为了向量检索让用户等 31 秒**，超时就降级
+- **熔断**：连续失败 3 次后冷却 60 秒，期间直接失败降级、不发任何网络请求——
+  否则 embedding 长期不可用时，每个用户请求都要白等一轮退避
+- **维度必须与实际写入的向量同源**：不能拿 `type='query'` 的向量探维度、
+  再用 `type='db'` 的向量写入（两者维度若不同，所有向量都会被拒且错维度被持久化，
+  向量检索会**永久失效且几乎无日志**）。现在只发一次批量请求，维度取自那批向量
+- **坏向量必须在校验后才进缓存**：含 NaN / 非数字 / 长度不一致的向量一旦入缓存，
+  后续每次查询都会被向量库拒绝，表现为「向量检索开着、日志正常，但永远召回不到东西」
+
+**降级矩阵**（任何一环坏掉都只损失该路召回，客服始终能回答）：
+
+| 情况 | 行为 |
+|---|---|
+| sqlite-vec 未安装 / 加载失败 | `available=false`，仅关键词 |
+| 未配 `EMBEDDING_API_KEY` | 向量检索不启用，仅关键词（默认） |
+| embedding 超时 / 报错 / 限流 | 本次跳过向量，仅关键词 |
+| 部分 FAQ 还没有向量 | 这些条目只参与关键词召回 |
+| 两条路都失败 | 返回空，走提示词的「查不到就转人工」话术 |
+
+**测试**：
+
+```bash
+npm test        # 6 个单测脚本，132 个断言
+npm run test:e2e  # 起真实服务 + 真实 embedding 的端到端测试
+```
+
+e2e **不使用 mock embedding 服务**——配额不通就是不通，测试如实反映当前状态，
+断言的是「无论 embedding 通不通，客服都必须正常回答」。
 
 ---
 
@@ -762,15 +928,36 @@ GET /api/health
 响应: { status: "ok", timestamp: string }
 ```
 
+#### Provider 列表
+```
+GET /api/providers
+响应: {
+  activeProvider: 'claude' | 'codebuddy',
+  providers: Array<{
+    id: 'claude' | 'codebuddy',
+    name: string,
+    description: string,
+    defaultModel: string,
+    isActive: boolean
+  }>
+}
+```
+
 #### 登录状态
 ```
-GET /api/check-login
+GET /api/check-login?provider=claude
 响应: {
+  provider: 'claude' | 'codebuddy',
   isLoggedIn: boolean,
   method?: 'env' | 'cli' | 'none',
   envConfigured?: boolean,
   cliConfigured?: boolean,
-  apiKey?: string
+  apiKey?: string,
+  envVars?: { authToken?: string, baseUrl?: string, model?: string },
+  providers: {
+    claude: { ... },   // 各 provider 的鉴权状态
+    codebuddy: { ... }
+  }
 }
 ```
 
@@ -778,6 +965,11 @@ GET /api/check-login
 ```
 POST /api/save-env-config
 请求体: {
+  // Claude Code (MiniMax)
+  anthropicAuthToken?: string,
+  anthropicBaseUrl?: string,
+  anthropicModel?: string,
+  // CodeBuddy
   apiKey?: string,
   authToken?: string,
   internetEnv?: string,
@@ -788,8 +980,9 @@ POST /api/save-env-config
 
 #### 获取模型列表
 ```
-GET /api/models
+GET /api/models?provider=claude
 响应: {
+  provider: 'claude' | 'codebuddy',
   models: Array<{ modelId: string, name: string, description?: string }>,
   defaultModel: string
 }
@@ -908,7 +1101,13 @@ const stream = query({
 创建 `.env` 文件:
 
 ```bash
-PORT=3000
+PORT=3001
+# Claude Code (MiniMax)
+AGENT_PROVIDER=claude
+ANTHROPIC_AUTH_TOKEN=your_minimax_api_key
+ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
+ANTHROPIC_MODEL=MiniMax-M3.1-Flash
+# CodeBuddy（备用 Provider）
 CODEBUDDY_API_KEY=your_api_key
 CODEBUDDY_AUTH_TOKEN=your_auth_token
 CODEBUDDY_BASE_URL=https://api.example.com
@@ -921,7 +1120,7 @@ CODEBUDDY_INTERNET_ENVIRONMENT=external
 import dotenv from 'dotenv';
 dotenv.config();
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 ```
 
 ### 4. 自定义消息格式
@@ -1279,7 +1478,7 @@ console.log('[State] Messages:', currentSession?.messages);
 
 ### Q: 如何添加新的工具？
 
-A: CodeBuddy Agent SDK 的工具是由 SDK 内部管理的，无需在应用层添加。如果需要自定义工具行为，可以通过 `canUseTool` 回调进行控制。
+A: Agent SDK 的工具是由 SDK 内部管理的，无需在应用层添加。如果需要自定义工具行为，可以通过 `canUseTool` 回调进行控制。
 
 ---
 
@@ -1325,7 +1524,7 @@ RUN npm ci --production
 COPY . .
 RUN npm run build
 
-EXPOSE 3000
+EXPOSE 3001
 
 CMD ["npm", "start"]
 ```
@@ -1334,7 +1533,7 @@ CMD ["npm", "start"]
 
 ```bash
 docker build -t web-agent .
-docker run -p 3000:3000 -v $(pwd)/data:/app/data web-agent
+docker run -p 3001:3001 -v $(pwd)/data:/app/data web-agent
 ```
 
 ### 4. 环境变量配置
@@ -1343,8 +1542,12 @@ docker run -p 3000:3000 -v $(pwd)/data:/app/data web-agent
 
 ```bash
 # .env.production
-PORT=3000
+PORT=3001
 NODE_ENV=production
+AGENT_PROVIDER=claude
+ANTHROPIC_AUTH_TOKEN=your_minimax_api_key
+ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
+ANTHROPIC_MODEL=MiniMax-M3.1-Flash
 CODEBUDDY_API_KEY=your_api_key
 CODEBUDDY_AUTH_TOKEN=your_auth_token
 ```
@@ -1422,6 +1625,8 @@ app.get('/api/models', async (req, res) => {
 
 ## 扩展阅读
 
+- [Claude Code Agent SDK 文档](https://code.claude.com/docs/en/agent-sdk/overview)
+- [MiniMax 开放平台](https://platform.minimaxi.com)
 - [CodeBuddy Agent SDK 文档](https://codebuddy.tencent.com)
 - [Express.js 官方文档](https://expressjs.com/)
 - [React Router 文档](https://reactrouter.com/)
