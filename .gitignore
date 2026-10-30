@@ -4,3 +4,21 @@ data/
 .npm-cache/
 .env
 *.db
+
+# tsc -b 的编译产物（server/ 是 ESM 源码，由 tsx 直接跑，不需要编译输出）
+server/*.js
+server/*.d.ts
+src/**/*.js
+src/**/*.d.ts
+scripts/*.mjs
+scripts/*.d.mts
+vite.config.js
+vite.config.d.ts
+*.tsbuildinfo
+
+# 本地工作区（计划文档、执行 ledger 等）
+.superpowers/
+
+# Claude Code 本地配置（含密钥，禁止提交）
+.claude/settings.local.json
+minimax-config.txt

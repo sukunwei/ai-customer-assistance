@@ -16,7 +16,8 @@ if (!fs.existsSync(dataDir)) {
 }
 
 // 创建数据库连接
-const db = new Database(dbPath);
+// 显式标注类型，避免 composite 项目的声明生成报 TS4023
+export const db: Database.Database = new Database(dbPath);
 
 // 启用 WAL 模式以提高性能
 db.pragma('journal_mode = WAL');
@@ -29,6 +30,7 @@ db.exec(`
     title TEXT NOT NULL,
     model TEXT NOT NULL,
     sdk_session_id TEXT,
+    provider TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -93,6 +95,19 @@ try {
   // 忽略错误（列可能已存在）
 }
 
+// provider 列：历史会话都来自 CodeBuddy
+try {
+  const tableInfo = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+  const hasProvider = tableInfo.some(col => col.name === 'provider');
+  if (!hasProvider) {
+    db.exec("ALTER TABLE sessions ADD COLUMN provider TEXT");
+    console.log("[DB] Added provider column to sessions table");
+  }
+  db.exec("UPDATE sessions SET provider = 'codebuddy' WHERE provider IS NULL");
+} catch (e) {
+  // 忽略错误（列可能已存在）
+}
+
 // ============= 类型定义 =============
 
 export interface DbSession {
@@ -100,6 +115,7 @@ export interface DbSession {
   title: string;
   model: string;
   sdk_session_id: string | null;
+  provider: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -155,14 +171,14 @@ export function getSession(id: string): DbSession | undefined {
 
 export function createSession(session: DbSession): DbSession {
   const stmt = db.prepare(`
-    INSERT INTO sessions (id, title, model, sdk_session_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO sessions (id, title, model, sdk_session_id, provider, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
-  stmt.run(session.id, session.title, session.model, session.sdk_session_id, session.created_at, session.updated_at);
+  stmt.run(session.id, session.title, session.model, session.sdk_session_id, session.provider, session.created_at, session.updated_at);
   return session;
 }
 
-export function updateSession(id: string, updates: Partial<Pick<DbSession, 'title' | 'model' | 'sdk_session_id'>>): boolean {
+export function updateSession(id: string, updates: Partial<Pick<DbSession, 'title' | 'model' | 'sdk_session_id' | 'provider'>>): boolean {
   const fields: string[] = [];
   const values: any[] = [];
 
@@ -177,6 +193,10 @@ export function updateSession(id: string, updates: Partial<Pick<DbSession, 'titl
   if (updates.sdk_session_id !== undefined) {
     fields.push('sdk_session_id = ?');
     values.push(updates.sdk_session_id);
+  }
+  if (updates.provider !== undefined) {
+    fields.push('provider = ?');
+    values.push(updates.provider);
   }
 
   if (fields.length === 0) return false;

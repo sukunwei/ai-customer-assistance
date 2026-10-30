@@ -1,5 +1,5 @@
 {
-  "name": "smart-customer-service",
+  "name": "ai-customer-assistance",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
@@ -8,17 +8,23 @@
     "dev:client": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "server": "tsx server/index.ts"
+    "server": "tsx server/index.ts",
+    "test": "tsx scripts/test-embeddings.mts && tsx scripts/test-vector-store.mts && tsx scripts/test-vectorize-store.mts && tsx scripts/test-retriever.mts && tsx scripts/test-rag-config.mts && tsx scripts/test-rag-index.mts && tsx scripts/test-rag-integration.mts && tsx scripts/test-faq-search.mts",
+    "test:e2e": "tsx scripts/test-e2e-rag.mts"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.312",
     "@tdesign-react/chat": "^1.0.2",
     "@tencent-ai/agent-sdk": "^0.3.43",
     "better-sqlite3": "^12.6.2",
+    "dotenv": "^18.0.9",
     "express": "^4.18.2",
     "lucide-react": "^0.563.0",
+    "opencc-js": "^1.4.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^7.13.0",
+    "sqlite-vec": "^0.1.9",
     "tdesign-icons-react": "^0.5.0",
     "tdesign-react": "^1.12.0",
     "uuid": "^9.0.0"
@@ -39,5 +45,6 @@
     "tsx": "^4.6.2",
     "typescript": "^5.3.2",
     "vite": "^5.0.10"
-  }
+  },
+  "description": "AI Customer Assistance - 基于 Claude Code Agent SDK 的智能客服 Web 应用"
 }
