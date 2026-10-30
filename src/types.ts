@@ -4,8 +4,8 @@
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
 
-/** Agent Provider：Claude Code（MiniMax）或 CodeBuddy */
-export type ProviderId = 'claude' | 'codebuddy';
+/** Agent Provider：Claude Code（MiniMax） */
+export type ProviderId = 'claude';
 
 export interface ProviderInfo {
   id: ProviderId;

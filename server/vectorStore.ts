@@ -9,6 +9,7 @@
  */
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
+import { createDbMetaStore, type MetaStore } from './ragMeta.js';
 
 export interface VectorStore {
   /** sqlite-vec 是否加载成功 */
@@ -42,7 +43,6 @@ export interface VectorStore {
 }
 
 const VEC_TABLE = 'faq_vec';
-const META_TABLE = 'rag_meta';
 
 /** 向量是否合法：长度匹配且每个分量都是有限数 */
 function isValidVector(vector: number[], dim: number): boolean {
@@ -53,7 +53,7 @@ function isValidVector(vector: number[], dim: number): boolean {
   return true;
 }
 
-export function createVectorStore(db: Database.Database): VectorStore {
+export function createVectorStore(db: Database.Database, meta?: MetaStore): VectorStore {
   let available = false;
   try {
     sqliteVec.load(db);
@@ -65,16 +65,14 @@ export function createVectorStore(db: Database.Database): VectorStore {
     );
   }
 
+  const metaStore = meta ?? createDbMetaStore(db);
   let currentDim: number | null = null;
 
   if (available) {
     try {
-      db.exec(`CREATE TABLE IF NOT EXISTS ${META_TABLE} (key TEXT PRIMARY KEY, value TEXT)`);
-      const row = db.prepare(`SELECT value FROM ${META_TABLE} WHERE key = ?`).get('embedding_dim') as
-        | { value: string }
-        | undefined;
-      if (row?.value) {
-        const parsed = parseInt(row.value, 10);
+      const recorded = metaStore.get('embedding_dim');
+      if (recorded) {
+        const parsed = parseInt(recorded, 10);
         if (Number.isFinite(parsed) && parsed > 0) currentDim = parsed;
       }
     } catch (error) {
@@ -85,10 +83,7 @@ export function createVectorStore(db: Database.Database): VectorStore {
   /** 建表（维度已知时） */
   const createVecTable = (dim: number) => {
     db.exec(`CREATE VIRTUAL TABLE ${VEC_TABLE} USING vec0(faq_id INTEGER PRIMARY KEY, embedding FLOAT[${dim}])`);
-    db.prepare(`INSERT OR REPLACE INTO ${META_TABLE} (key, value) VALUES (?, ?)`).run(
-      'embedding_dim',
-      String(dim)
-    );
+    metaStore.set('embedding_dim', String(dim));
   };
 
   /**
@@ -208,23 +203,12 @@ export function createVectorStore(db: Database.Database): VectorStore {
 
     getMeta(key: string): string | null {
       if (!available) return null;
-      try {
-        const row = db.prepare(`SELECT value FROM ${META_TABLE} WHERE key = ?`).get(key) as
-          | { value: string }
-          | undefined;
-        return row?.value ?? null;
-      } catch {
-        return null;
-      }
+      return metaStore.get(key);
     },
 
     setMeta(key: string, value: string): void {
       if (!available) return;
-      try {
-        db.prepare(`INSERT OR REPLACE INTO ${META_TABLE} (key, value) VALUES (?, ?)`).run(key, value);
-      } catch (error) {
-        console.warn(`[Vector] 写入元数据失败（${key}）:`, (error as Error)?.message);
-      }
+      metaStore.set(key, value);
     },
   };
 }

@@ -4,6 +4,9 @@
  * 用真实的 FAQ 库 + 真实的 Cloudflare embedding + 真实的 Vectorize 索引，
  * 对一批问句跑三条检索路径，打印对比表。
  *
+ * 需要真实的 Cloudflare key（.env 里配好），因此不属于 npm test 的一部分：
+ *   set -a; . ./.env; set +a; npx tsx scripts/test-rag-probe.mts
+ *
  * 运行: npx tsx scripts/test-rag-probe.mts
  */
 import * as db from '../server/db.js';
@@ -44,6 +47,14 @@ const QUESTIONS: Array<{ q: string; expect: string; kind: 'A' | 'B' | 'C' }> = [
   { q: '东西要退回去寄哪里', expect: '你们的退货地址是什么？', kind: 'B' },
   { q: '买了还能不要了吗', expect: '如何修改或取消订单？', kind: 'B' },
   { q: '手机号能不能换', expect: '如何修改账号密码/手机号？', kind: 'B' },
+  { q: '我的包裹到哪儿了', expect: '订单发货后如何查物流？', kind: 'B' },
+  { q: '快递到哪了', expect: '订单发货后如何查物流？', kind: 'B' },
+  { q: '订单能取消吗', expect: '如何修改或取消订单？', kind: 'B' },
+  { q: '不想要了', expect: '如何修改或取消订单？', kind: 'B' },
+  { q: '东西送到了吗', expect: '订单显示已签收但我没收到货？', kind: 'B' },   // 问的正是签收情况
+  { q: '我要退货', expect: '如何申请退款？', kind: 'B' },
+  { q: '密码忘了', expect: '无法登录账号怎么办？', kind: 'B' },   // 密码忘了 → 登录不了
+  { q: '怎么取消退款', expect: '如何申请退款？', kind: 'B' },
   { q: '今天天气怎么样', expect: '（不该命中任何 FAQ）', kind: 'C' },
   { q: '帮我写首诗', expect: '（不该命中任何 FAQ）', kind: 'C' },
 ];
@@ -82,13 +93,33 @@ async function run() {
     rows.push({ kind, q, expect, keyword, vector, fused: fused.map(f => faqs.find(x => x.id === f.id)?.question).filter(Boolean) });
   }
 
-  const hit = (list: string[], expect: string) =>
-    expect.startsWith('（') ? '—' : list.some(x => x?.includes(expect.replace('？', '').slice(0, 6)) || expect.includes(x?.replace('？', '').slice(0, 6))) ? '✓' : '✗';
+  /** 期望与实际是否指同一条 FAQ（去掉问号后取前 5 字做双向包含判断） */
+  const matches = (list: string[], expect: string): boolean => {
+    if (expect.startsWith('（')) return false;
+    const key = expect.replace('？', '').slice(0, 5);
+    return list.some(x => {
+      if (!x) return false;
+      const other = x.replace('？', '').slice(0, 5);
+      return x.includes(key) || other.includes(expect.replace('？', '').slice(0, 5));
+    });
+  };
+  const hit = (list: string[], expect: string) => (expect.startsWith('（') ? '—' : matches(list, expect) ? '✓' : '✗');
 
   console.log('类型 | 问句 | 期望命中 | 关键词 | 向量 | 融合');
   console.log('─'.repeat(100));
   for (const r of rows) {
     console.log(`  ${r.kind}  | ${r.q.padEnd(12)} | ${r.expect.padEnd(20)} | ${hit(r.keyword, r.expect)} ${r.keyword[0]?.slice(0, 14) || '(无)'} | ${hit(r.vector, r.expect)} ${r.vector[0]?.slice(0, 14) || '(无)'} | ${hit(r.fused, r.expect)} ${r.fused[0]?.slice(0, 14) || '(无)'}`);
+  }
+
+  // 负例（期望「不该命中」）不计入准确率
+  const positives = rows.filter(r => !r.expect.startsWith('（'));
+  const top3Ok = positives.filter(r => matches(r.fused, r.expect)).length;
+  const top1Ok = positives.filter(r => r.fused[0] === r.expect).length;
+  console.log(`\n正例 Top1 命中 ${top1Ok}/${positives.length}，Top3 覆盖 ${top3Ok}/${positives.length}`);
+  const uncovered = positives.filter(r => !matches(r.fused, r.expect));
+  if (uncovered.length) {
+    console.log('Top3 未覆盖：');
+    uncovered.forEach(r => console.log(`   「${r.q}」期望 ${r.expect}，实得 ${r.fused.join(' | ') || '(空)'}`));
   }
 
   console.log('\n\n完整命中列表：');

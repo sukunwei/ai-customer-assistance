@@ -24,6 +24,27 @@ export interface RankFaqOptions {
   limit?: number;
   /** 当前识别出的意图分类，命中则加权 */
   category?: string;
+  /**
+   * 命中所需的最少「强信号」数，默认 1。
+   *
+   * 强信号 = FAQ 的关键词被 query 精确命中（或短 query 被关键词包含）或整句短语命中；
+   * 弱信号 = 只有 2-gram 偶然匹配。
+   *
+   * 实测证明弱信号里真假混杂且分数相同（「手机号能不能换」是真命中 2 分，
+   * 「钱什么时候能回来」命中「工作时间」是噪声也是 2 分），靠总分阈值无法区分。
+   * 所以弱信号一律不返回——它们交给向量路（实测这些真命中向量路都能召回）。
+   */
+  minStrongHits?: number;
+}
+
+/** 单条 FAQ 的打分结果 */
+export interface FaqScore {
+  /** 总分，用于排序 */
+  total: number;
+  /** 强信号命中数：关键词精确匹配 / 短 query 反向匹配 / 整句短语命中 */
+  strongHits: number;
+  /** 弱信号命中数：2-gram 命中 */
+  gramHits: number;
 }
 
 /** 分数权重 */
@@ -82,53 +103,59 @@ function splitKeywords(keywords?: string | null): string[] {
 }
 
 /** 给单条 FAQ 打分 */
-function scoreFaq(faq: FaqLike, query: string, grams: string[], category?: string): number {
+function scoreFaq(faq: FaqLike, query: string, grams: string[], category?: string): FaqScore {
   const question = toSimplified(faq.question || '');
   const answer = toSimplified(faq.answer || '');
   const keywords = splitKeywords(faq.keywords);
 
-  let score = 0;
+  let total = 0;
+  let strongHits = 0;
+  let gramHits = 0;
 
   for (const keyword of keywords) {
     const kw = toSimplified(keyword);
     if (!kw) continue;
 
     if (query.includes(kw)) {
-      // query 命中了这个关键词
-      score += SCORE.keywordInQuery;
+      // query 精确命中了这个关键词 —— 强信号
+      total += SCORE.keywordInQuery;
+      strongHits++;
       // 该关键词同时出现在标题/答案里，说明这条 FAQ 正是讲这件事的
-      if (question.includes(kw)) score += SCORE.keywordInQuestion;
-      if (answer.includes(kw)) score += SCORE.keywordInAnswer;
+      if (question.includes(kw)) total += SCORE.keywordInQuestion;
+      if (answer.includes(kw)) total += SCORE.keywordInAnswer;
     } else if (query.length <= 4 && kw.includes(query)) {
-      // 短 query 被关键词包含（如 query="退款" 命中关键词 "退款时间"）
-      score += SCORE.keywordContainsShortQuery;
+      // 短 query 被关键词包含（如 query="退款" 命中 "退款时间"）—— 也是强信号
+      total += SCORE.keywordContainsShortQuery;
+      strongHits++;
     }
   }
 
-  // query 的 2-gram 命中标题或答案（同一 gram 只计一次）
+  // query 的 2-gram 命中标题或答案（同一 gram 只计一次）—— 弱信号
   const hitGrams = new Set<string>();
   for (const gram of grams) {
     if (question.includes(gram) || answer.includes(gram)) hitGrams.add(gram);
   }
-  score += Math.min(hitGrams.size, SCORE.bigramMax);
+  gramHits = hitGrams.size;
+  total += Math.min(gramHits, SCORE.bigramMax);
 
-  // 整句短语命中
+  // 整句短语命中 —— 强信号
   if (query && (question.includes(query) || answer.includes(query))) {
-    score += SCORE.phrase;
+    total += SCORE.phrase;
+    strongHits++;
   }
 
-  // 分类一致
+  // 分类一致 —— 弱信号（分类相同不代表内容相关）
   if (category && faq.category === category) {
-    score += SCORE.category;
+    total += SCORE.category;
   }
 
-  return score;
+  return { total, strongHits, gramHits };
 }
 
 /**
  * 按相关度排序 FAQ。
  *
- * 分数为 0 的条目会被丢弃 —— 宁可返回空，让模型走「查不到就转人工」的话术，
+ * 只保留达到强信号门槛的条目 —— 宁可返回空，让模型走「查不到就转人工」的话术，
  * 也不要塞给它不相关的 FAQ 让它硬凑答案。
  */
 export function rankFaq<T extends FaqLike>(
@@ -137,6 +164,7 @@ export function rankFaq<T extends FaqLike>(
   options: RankFaqOptions = {}
 ): T[] {
   const limit = options.limit ?? 3;
+  const minStrongHits = options.minStrongHits ?? 1;
   const normalizedQuery = toSimplified((query || '').trim());
   if (!normalizedQuery) return [];
 
@@ -144,8 +172,8 @@ export function rankFaq<T extends FaqLike>(
 
   const scored = items
     .map(faq => ({ faq, score: scoreFaq(faq, normalizedQuery, grams, options.category) }))
-    .filter(entry => entry.score > 0)
-    .sort((a, b) => b.score - a.score);
+    .filter(entry => entry.score.strongHits >= minStrongHits)
+    .sort((a, b) => b.score.total - a.score.total);
 
   return scored.slice(0, limit).map(entry => entry.faq);
 }

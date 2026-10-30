@@ -10,9 +10,83 @@
 - 💬 **快捷提问** — 首页提供 6 个常用问题快捷入口，一键发送
 - ⭐ **满意度评价** — 每轮对话支持 1-5 星评分 + 文字评价
 - 📊 **管理后台** — 独立管理页面，查看会话统计、满意度分布、意图分析
-- 🔀 **双 Provider** — Claude Code (MiniMax) 与 CodeBuddy 可随时切换
+- 🔀 **Provider 抽象** — 统一的事件流归一化层，将来接入新的 Agent SDK 只需新增一个实现
 - 🔒 **权限控制** — 支持 4 种权限模式，工具调用可实时弹窗确认
 - 💾 **数据持久化** — SQLite 本地数据库，会话和消息自动保存
+
+## 处理流程
+
+### 一次提问的处理链路
+
+```mermaid
+flowchart TD
+    U["用户提问"] --> REQ["POST /api/chat"]
+    REQ --> NORM["繁简归一化<br/>toSimplified"]
+    NORM --> INTENT["意图识别<br/>detectIntent 规则匹配"]
+    INTENT --> RETRIEVE["FAQ 混合检索<br/>retrieveFaqs"]
+    RETRIEVE --> CTX["拼接 FAQ 上下文"]
+    CTX --> PROMPT["构建系统提示词<br/>服务范围 + 输出边界 + FAQ 上下文"]
+    PROMPT --> AGENT["调用 Agent SDK<br/>Claude Code SDK"]
+    AGENT --> STREAM["SSE 事件流<br/>init / text / done"]
+    STREAM --> RENDER["前端渲染答复"]
+    STREAM --> SAVE["写入 messages 表"]
+```
+
+> **客服模式的硬约束**：默认客服不使用任何工具（`tools: []`），它输出的每一句话都直接发给客户。
+> 没有工具意味着它不会自己去翻项目文件，也就不会把「我先查一下数据库」这类工程过程当成答复。
+> 用户自建的 Agent（编程助手、写作助手等）不受此限制，工具调用照旧走权限确认。
+
+### 检索层：关键词 + 向量混合
+
+```mermaid
+flowchart TD
+    Q["问句（已转简体）"] --> K["关键词路<br/>rankFaq 打分排序"]
+    Q --> V["向量路"]
+    V --> EMB["远程 embedding<br/>Cloudflare bge-m3 / MiniMax / OpenAI 兼容"]
+    EMB --> OK{"向量库可用？"}
+    OK -- "否：自动降级" --> K
+    OK -- "是" --> VS["向量库 topK 查询<br/>sqlite-vec 或 Cloudflare Vectorize"]
+    VS --> RRF["RRF 融合<br/>两路按排名倒数加权求和"]
+    K --> RRF
+    RRF --> TOP["Top-K FAQ 送进提示词"]
+```
+
+两路分工是刻意设计的：
+
+| 检索路 | 负责 | 特点 |
+|---|---|---|
+| 关键词路 | 高精度精确匹配 | 命中 FAQ 的 `keywords` 字段才算数；纯 2-gram 偶然匹配会被丢弃 |
+| 向量路 | 补语义近似 | 「真人客服」→「如何联系人工客服？」这类说法只有它能召回 |
+
+之所以要分层：实测发现「弱命中」（只有 2-gram 偶然匹配）里真假混杂且分数相同——
+「手机号能不能换」是真命中但只有 2 分，「钱什么时候能回来」命中「工作时间」是噪声也是 2 分，
+靠总分阈值无法区分。所以关键词路只保留强命中，其余交给向量路兜底。
+
+**降级矩阵**——任何一环出问题都只损失该路召回，客服始终能回答：
+
+| 情况 | 行为 |
+|---|---|
+| `sqlite-vec` 未安装 / 加载失败 | 仅关键词检索，服务照常启动 |
+| 未配 `EMBEDDING_API_KEY` | 向量检索不启用，仅关键词 |
+| embedding 超时 / 报错 / 限流 | 连续失败 3 次后熔断 60 秒，期间直接降级不发请求 |
+| Cloudflare Vectorize 索引尚未生效 | 写入约 60~100 秒后才可查，期间自动降级 |
+| 两条路都失败 | 返回空，走提示词的「查不到就转人工」话术 |
+
+### 启动时的向量索引
+
+```mermaid
+flowchart TD
+    S["服务启动"] --> CFG["读取配置<br/>VECTOR_SEARCH / VECTOR_STORE"]
+    CFG --> ON{"向量检索已启用？"}
+    ON -- "否" --> KW["仅关键词检索"]
+    ON -- "是" --> CHK{"索引已最新？<br/>条数 + 内容哈希 + 模型"}
+    CHK -- "是" --> SKIP["跳过重建<br/>不浪费配额"]
+    CHK -- "否" --> EMB["批量 embedding<br/>type=db"]
+    EMB --> UPSERT["写入向量库<br/>upsert 幂等"]
+```
+
+索引元数据（模型、条数、内容哈希）持久化在 SQLite 里，所以**重启服务不会重复 embedding**；
+FAQ 内容改了（哈希变了）才会重建。
 
 ## 技术栈
 
@@ -21,7 +95,7 @@
 | 后端 | Node.js + Express + TypeScript |
 | 前端 | React 18 + TypeScript + Vite |
 | UI | TDesign React 组件库 |
-| AI | Claude Code Agent SDK (`@anthropic-ai/claude-agent-sdk`)，备选 CodeBuddy Agent SDK (`@tencent-ai/agent-sdk`) |
+| AI | Claude Code Agent SDK (`@anthropic-ai/claude-agent-sdk`) |
 | 模型 | MiniMax（Anthropic 兼容端点 `https://api.minimax.io/anthropic`） |
 | 数据库 | SQLite (`better-sqlite3`) |
 
@@ -30,7 +104,6 @@
 - **Node.js** ≥ 18（推荐使用 22.x）
 - **npm** 或 **yarn**
 - **MiniMax API Key**（用于 AI 对话功能，配置见下方「配置说明」）
-- 使用 CodeBuddy 作为备用 Provider 时，需 **CodeBuddy CLI** 已登录
 
 ## 快速开始
 
@@ -131,8 +204,8 @@ npm start
 |------|------|------|
 | `/api/health` | GET | 健康检查 |
 | `/api/providers` | GET | 获取可用的 Agent Provider 列表与当前生效的 Provider |
-| `/api/check-login` | GET | 检查 Provider 鉴权状态（`?provider=claude\|codebuddy`） |
-| `/api/models` | GET | 获取可用模型列表（`?provider=claude\|codebuddy`） |
+| `/api/check-login` | GET | 检查 Provider 鉴权状态 |
+| `/api/models` | GET | 获取可用模型列表 |
 | `/api/sessions` | GET | 获取所有会话 |
 | `/api/sessions` | POST | 创建新会话 |
 | `/api/sessions/:id` | GET | 获取单个会话详情 |
@@ -149,15 +222,14 @@ npm start
 
 ### Provider 选择
 
-应用支持两套 Agent SDK，可在「设置」页面或环境变量中切换：
+应用通过 Provider 抽象层调用 Agent SDK，当前实现：
 
 | Provider | SDK | 说明 |
 |----------|-----|------|
 | `claude`（默认） | `@anthropic-ai/claude-agent-sdk` | Claude Code 运行时，通过 Anthropic 兼容端点调用 MiniMax 模型 |
-| `codebuddy` | `@tencent-ai/agent-sdk` | CodeBuddy 运行时，需要 CodeBuddy CLI 登录或 API Key |
 
 ```bash
-AGENT_PROVIDER=claude   # claude | codebuddy
+AGENT_PROVIDER=claude
 ```
 
 ### Claude Code (MiniMax) 认证
@@ -177,24 +249,6 @@ ANTHROPIC_MODEL=MiniMax-M3.1-Flash
 
 > Claude Code Agent SDK 会以内置的 Claude Code 运行时启动子进程，并继承服务进程的环境变量，
 > 因此设置页写入的 `ANTHROPIC_*` 会立即生效。模型列表通过 `${ANTHROPIC_BASE_URL}/v1/models` 实时拉取。
-
-### CodeBuddy 认证（备用 Provider）
-
-**方式一：使用 CodeBuddy CLI 登录**
-
-```bash
-codebuddy login
-npm run dev
-```
-
-**方式二：环境变量配置**
-
-```bash
-CODEBUDDY_API_KEY=your_api_key
-CODEBUDDY_AUTH_TOKEN=your_auth_token
-CODEBUDDY_INTERNET_ENVIRONMENT=external
-CODEBUDDY_BASE_URL=https://api.example.com
-```
 
 ### 权限模式
 
@@ -370,13 +424,6 @@ npm install -g windows-build-tools
 Claude Code (MiniMax) Provider 需要配置 `ANTHROPIC_AUTH_TOKEN`（MiniMax API Key），
 在应用「设置」页面填写，或通过环境变量配置后重启服务。
 
-若使用 CodeBuddy Provider，则需要先登录 CodeBuddy CLI：
-
-```bash
-codebuddy login
-```
-
-然后在应用「设置」页面确认登录状态。
 
 ## License
 

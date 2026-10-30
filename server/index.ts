@@ -8,6 +8,7 @@ import { rankFaq } from "./faqSearch.js";
 import { toSimplified } from "./text.js";
 import { embedTexts } from "./embeddings.js";
 import { createVectorStore, type VectorStore } from "./vectorStore.js";
+import { createDbMetaStore } from "./ragMeta.js";
 import { createVectorizeStore } from "./vectorizeStore.js";
 import { retrieveFaqs } from "./retriever.js";
 import { getRagConfig } from "./ragConfig.js";
@@ -17,8 +18,6 @@ import {
   DEFAULT_PROVIDER,
   PROVIDERS,
   checkClaudeAuth,
-  checkCodebuddyAuth,
-  checkCodebuddyEnv,
   fetchClaudeModels,
   getClaudeConfig,
   isProviderId,
@@ -67,10 +66,12 @@ let vectorStoreCache: { kind: string; store: VectorStore } | null = null;
 
 function getVectorStore(config: ReturnType<typeof getRagConfig>): VectorStore {
   if (vectorStoreCache?.kind === config.vectorStore) return vectorStoreCache.store;
+  // 元数据持久化在本地 SQLite：重启后索引仍然有效，不会每次启动都重新 embedding
+  const metaStore = createDbMetaStore(db.default);
   const store: VectorStore =
     config.vectorStore === 'vectorize'
-      ? createVectorizeStore(config.vectorize)
-      : createVectorStore(db.default);
+      ? createVectorizeStore(config.vectorize, metaStore)
+      : createVectorStore(db.default, metaStore);
   vectorStoreCache = { kind: config.vectorStore, store };
   return store;
 }
@@ -255,13 +256,7 @@ app.get("/api/check-login", async (req, res) => {
   const requested = req.query.provider;
   const provider = resolveProvider(typeof requested === 'string' ? requested : undefined);
 
-  // 只有真正使用 CodeBuddy 时才探测它的 CLI 登录状态（探测会访问 CodeBuddy 认证服务）
-  const [claudeStatus, codebuddyStatus] = [
-    checkClaudeAuth(),
-    provider === 'codebuddy' ? await checkCodebuddyAuth() : checkCodebuddyEnv(),
-  ];
-
-  const status = provider === 'codebuddy' ? codebuddyStatus : claudeStatus;
+  const status = checkClaudeAuth();
 
   const response: LoginStatusResponse & {
     provider: ProviderId;
@@ -278,8 +273,7 @@ app.get("/api/check-login", async (req, res) => {
     apiKey: status.apiKey,
     envVars: status.envVars,
     providers: {
-      claude: claudeStatus as LoginStatusResponse,
-      codebuddy: codebuddyStatus as LoginStatusResponse,
+      claude: status as LoginStatusResponse,
     },
   };
 
@@ -288,7 +282,6 @@ app.get("/api/check-login", async (req, res) => {
 
 app.post("/api/save-env-config", (req, res) => {
   const {
-    apiKey, authToken, internetEnv, baseUrl,
     anthropicAuthToken, anthropicBaseUrl, anthropicModel
   } = req.body;
 
@@ -306,24 +299,6 @@ app.post("/api/save-env-config", (req, res) => {
   if (anthropicModel) {
     process.env.ANTHROPIC_MODEL = anthropicModel;
     configuredVars.push('ANTHROPIC_MODEL');
-  }
-
-  // --- CodeBuddy ---
-  if (apiKey) {
-    process.env.CODEBUDDY_API_KEY = apiKey;
-    configuredVars.push('CODEBUDDY_API_KEY');
-  }
-  if (authToken) {
-    process.env.CODEBUDDY_AUTH_TOKEN = authToken;
-    configuredVars.push('CODEBUDDY_AUTH_TOKEN');
-  }
-  if (internetEnv) {
-    process.env.CODEBUDDY_INTERNET_ENVIRONMENT = internetEnv;
-    configuredVars.push('CODEBUDDY_INTERNET_ENVIRONMENT');
-  }
-  if (baseUrl) {
-    process.env.CODEBUDDY_BASE_URL = baseUrl;
-    configuredVars.push('CODEBUDDY_BASE_URL');
   }
 
   if (configuredVars.length === 0) {
@@ -346,28 +321,7 @@ app.get("/api/models", async (req, res) => {
   const provider = resolveProvider(typeof requested === 'string' ? requested : undefined);
 
   try {
-    if (provider === 'codebuddy') {
-      const { unstable_v2_createSession } = await import('@tencent-ai/agent-sdk');
-      if (cachedModels.length === 0) {
-        console.log("[Models] Creating session to fetch available models...");
-        const session = await unstable_v2_createSession({ cwd: process.cwd() });
-        const models = await session.getAvailableModels();
-        if (models && Array.isArray(models)) {
-          cachedModels = models;
-        }
-      }
-
-      res.json({
-        provider,
-        models: cachedModels.length > 0 ? cachedModels : [
-          { modelId: "claude-sonnet-4", name: "Claude Sonnet 4" }
-        ],
-        defaultModel: PROVIDERS.codebuddy.defaultModel
-      });
-      return;
-    }
-
-    // Claude Code：直接向 MiniMax 的 Anthropic 兼容端点拉取模型列表
+    // 直接向 MiniMax 的 Anthropic 兼容端点拉取模型列表
     const config = getClaudeConfig();
     const models = await fetchClaudeModels(config);
     res.json({
@@ -379,13 +333,8 @@ app.get("/api/models", async (req, res) => {
     console.error("[Models] Error:", error);
     res.json({
       provider,
-      models: provider === 'codebuddy'
-        ? [
-            { modelId: "claude-sonnet-4", name: "Claude Sonnet 4" },
-            { modelId: "claude-opus-4", name: "Claude Opus 4" }
-          ]
-        : CLAUDE_FALLBACK_MODELS,
-      defaultModel: PROVIDERS[provider].defaultModel,
+      models: CLAUDE_FALLBACK_MODELS,
+      defaultModel: PROVIDERS.claude.defaultModel,
       error: error?.message || String(error)
     });
   }
@@ -825,7 +774,7 @@ app.post("/api/chat", async (req, res) => {
       console.log(`[Permission] Tool request: ${toolName}`);
 
       // 客服 Agent 不允许使用任何工具。tools: [] 已经让模型看不到工具了，
-      // 这里再一律 deny 兜底 —— CodeBuddy SDK 没有工具白名单，只能靠这道闸。
+      // 这里再一律 deny 兜底 —— 即使 SDK 侧漏了工具，也执行不了。
       if (isCustomerService) {
         console.warn(`[Permission] Denied (客服 Agent 不允许使用工具): ${toolName}`);
         return { behavior: 'deny', message: '客服助手不支持调用工具' };
@@ -1064,7 +1013,8 @@ app.listen(PORT, () => {
           { model: ragConfig.embedding.model }
         );
         if (written > 0) {
-          console.log(`[Vector] 已索引 ${written} 条 FAQ`);
+          // 跳过重建时也会走这里（indexFaqs 返回已有条数），所以措辞用「就绪」
+          console.log(`[Vector] FAQ 向量索引就绪（${written} 条）`);
         } else {
           console.warn('[Vector] FAQ 索引未完成，向量检索将退化为关键词检索');
         }

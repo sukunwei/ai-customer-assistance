@@ -1,6 +1,6 @@
 # AI Customer Assistance 二次开发指南
 
-这是一个基于 Claude Code Agent SDK（默认接入 MiniMax 模型，同时保留 CodeBuddy Provider）的完整 Web Agent 应用模板。本指南将帮助你理解项目结构并进行二次开发。
+这是一个基于 Claude Code Agent SDK（默认接入 MiniMax 模型）的完整 Web Agent 应用模板。本指南将帮助你理解项目结构并进行二次开发。
 
 ## 目录
 
@@ -20,7 +20,6 @@
 - Node.js + Express (RESTful API)
 - TypeScript
 - @anthropic-ai/claude-agent-sdk (Claude Code Agent SDK，默认接入 MiniMax)
-- @tencent-ai/agent-sdk (CodeBuddy Agent SDK，备用 Provider)
 - better-sqlite3 (SQLite 数据库)
 
 **前端**
@@ -36,7 +35,7 @@ web-agent/
 ├── server/                     # 后端服务
 │   ├── index.ts               # Express 服务器入口
 │   ├── db.ts                  # 数据库操作
-│   ├── providers.ts           # Provider 抽象层（Claude Code / CodeBuddy）
+│   ├── providers.ts           # Provider 抽象层（Claude Code）
 │   ├── faqSearch.ts           # FAQ 关键词打分排序
 │   ├── text.ts                # 繁简归一化
 │   ├── embeddings.ts          # 远程 embedding 客户端（MiniMax / OpenAI / Cloudflare 三协议）
@@ -99,7 +98,6 @@ web-agent/
 | Provider | SDK | 说明 |
 |----------|-----|------|
 | `claude`（默认） | `@anthropic-ai/claude-agent-sdk` | Claude Code 运行时，通过 Anthropic 兼容端点调用 MiniMax |
-| `codebuddy` | `@tencent-ai/agent-sdk` | CodeBuddy 运行时 |
 
 两个 SDK 的 `query()` 签名一致，差异（工具结果的投递方式、结果字段命名等）在 provider 层归一化为统一的 `AgentEvent` 事件流。
 
@@ -139,22 +137,6 @@ import { fetchClaudeModels } from "./providers.js";
 const models = await fetchClaudeModels();
 // → [{ modelId: "MiniMax-M3.1-Flash", name: "MiniMax-M3.1-Flash" }, ...]
 ```
-
-#### CodeBuddy 身份认证（仅 CodeBuddy Provider 使用）
-
-```typescript
-import { unstable_v2_authenticate } from "@tencent-ai/agent-sdk";
-
-const result = await unstable_v2_authenticate({
-  environment: 'external',
-  onAuthUrl: async (authState) => {
-    console.log('需要登录:', authState.authUrl);
-  }
-});
-```
-
-> 该调用会访问 CodeBuddy 认证服务，可能长时间无响应，因此 provider 层只在真正使用
-> CodeBuddy 时才调用，并带 5 秒超时保护。
 
 ### 2. 数据库设计
 
@@ -265,8 +247,7 @@ if (options.disableTools) {
 }
 ```
 
-服务端 `canUseTool` 里对客服一律 `deny`，作为 CodeBuddy 侧的兜底
-（CodeBuddy SDK 没有 `tools` 白名单选项，只有 `allowedTools`/`disallowedTools`）。
+服务端 `canUseTool` 里对客服一律 `deny`，作为 SDK 侧漏掉工具限制时的兜底。
 客服模式还会强制 `permissionMode=default`——`bypassPermissions` 会让 SDK 直接跳过
 `canUseTool`，那样工具就真的执行了。
 
@@ -932,9 +913,9 @@ GET /api/health
 ```
 GET /api/providers
 响应: {
-  activeProvider: 'claude' | 'codebuddy',
+  activeProvider: 'claude',
   providers: Array<{
-    id: 'claude' | 'codebuddy',
+    id: 'claude',
     name: string,
     description: string,
     defaultModel: string,
@@ -947,7 +928,7 @@ GET /api/providers
 ```
 GET /api/check-login?provider=claude
 响应: {
-  provider: 'claude' | 'codebuddy',
+  provider: 'claude',
   isLoggedIn: boolean,
   method?: 'env' | 'cli' | 'none',
   envConfigured?: boolean,
@@ -955,8 +936,7 @@ GET /api/check-login?provider=claude
   apiKey?: string,
   envVars?: { authToken?: string, baseUrl?: string, model?: string },
   providers: {
-    claude: { ... },   // 各 provider 的鉴权状态
-    codebuddy: { ... }
+    claude: { ... }   // 各 provider 的鉴权状态
   }
 }
 ```
@@ -968,12 +948,7 @@ POST /api/save-env-config
   // Claude Code (MiniMax)
   anthropicAuthToken?: string,
   anthropicBaseUrl?: string,
-  anthropicModel?: string,
-  // CodeBuddy
-  apiKey?: string,
-  authToken?: string,
-  internetEnv?: string,
-  baseUrl?: string
+  anthropicModel?: string
 }
 响应: { success: boolean, message: string }
 ```
@@ -982,7 +957,7 @@ POST /api/save-env-config
 ```
 GET /api/models?provider=claude
 响应: {
-  provider: 'claude' | 'codebuddy',
+  provider: 'claude',
   models: Array<{ modelId: string, name: string, description?: string }>,
   defaultModel: string
 }
@@ -1107,11 +1082,6 @@ AGENT_PROVIDER=claude
 ANTHROPIC_AUTH_TOKEN=your_minimax_api_key
 ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
 ANTHROPIC_MODEL=MiniMax-M3.1-Flash
-# CodeBuddy（备用 Provider）
-CODEBUDDY_API_KEY=your_api_key
-CODEBUDDY_AUTH_TOKEN=your_auth_token
-CODEBUDDY_BASE_URL=https://api.example.com
-CODEBUDDY_INTERNET_ENVIRONMENT=external
 ```
 
 在 `server/index.ts` 中使用:
@@ -1548,8 +1518,6 @@ AGENT_PROVIDER=claude
 ANTHROPIC_AUTH_TOKEN=your_minimax_api_key
 ANTHROPIC_BASE_URL=https://api.minimax.io/anthropic
 ANTHROPIC_MODEL=MiniMax-M3.1-Flash
-CODEBUDDY_API_KEY=your_api_key
-CODEBUDDY_AUTH_TOKEN=your_auth_token
 ```
 
 ---
@@ -1627,7 +1595,6 @@ app.get('/api/models', async (req, res) => {
 
 - [Claude Code Agent SDK 文档](https://code.claude.com/docs/en/agent-sdk/overview)
 - [MiniMax 开放平台](https://platform.minimaxi.com)
-- [CodeBuddy Agent SDK 文档](https://codebuddy.tencent.com)
 - [Express.js 官方文档](https://expressjs.com/)
 - [React Router 文档](https://reactrouter.com/)
 - [TDesign React 组件库](https://tdesign.tencent.com/react/)

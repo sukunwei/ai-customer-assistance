@@ -3,7 +3,9 @@
  *
  * 运行: npx tsx scripts/test-vectorize-store.mts
  */
+import Database from 'better-sqlite3';
 import { createVectorizeStore } from '../server/vectorizeStore.js';
+import { createDbMetaStore, createMemoryMetaStore } from '../server/ragMeta.js';
 
 let failures = 0;
 let checks = 0;
@@ -179,6 +181,31 @@ console.log('9. 元数据读写');
   store.setMeta('embedding_model', 'bge-m3');
   check('写入后能读回', store.getMeta('embedding_model') === 'bge-m3');
   restoreFetch();
+}
+
+console.log('10. 注入持久化 MetaStore 后数据跨实例保留');
+{
+  const db = new Database(':memory:');
+  const meta = createDbMetaStore(db);
+  const store1 = createVectorizeStore(CONFIG, meta);
+  store1.setMeta('faq_count', '16');
+  store1.setMeta('embedding_model', 'bge-m3');
+
+  // 模拟进程重启：新建 store 实例，但共用持久化的 meta
+  const store2 = createVectorizeStore(CONFIG, meta);
+  check('新实例仍能读到 faq_count', store2.getMeta('faq_count') === '16', String(store2.getMeta('faq_count')));
+  check('新实例仍能读到模型名', store2.getMeta('embedding_model') === 'bge-m3', String(store2.getMeta('embedding_model')));
+  check('count 也能读到', store2.count() === 16, String(store2.count()));
+}
+
+console.log('11. 默认使用进程内 MetaStore（测试可独立运行）');
+{
+  const store = createVectorizeStore(CONFIG);
+  store.setMeta('k', 'v');
+  check('写入后可读回', store.getMeta('k') === 'v', String(store.getMeta('k')));
+  const mem = createMemoryMetaStore();
+  mem.set('a', '1');
+  check('内存 store 独立', mem.get('a') === '1' && mem.get('b') === null);
 }
 
 console.log(`\n${failures === 0 ? '全部通过' : `${failures} 个断言失败`}（${checks - failures}/${checks}）`);
