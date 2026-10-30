@@ -170,5 +170,28 @@ console.log('11. force 参数强制重建');
   check('force 触发重建', calls === 2, `embedder 被调用 ${calls} 次`);
 }
 
+console.log('12. FAQ 内容变化（条数不变）触发重建');
+{
+  const db = new Database(':memory:');
+  const store = createVectorStore(db);
+  let calls = 0;
+  const embedder = async (texts: string[]) => {
+    calls++;
+    return texts.map(() => new Array(8).fill(0.5));
+  };
+  await indexFaqs(store, embedder as any, FAQS, { model: 'embo-01' });
+  check('首次建立索引', calls === 1, String(calls));
+  check('内容哈希已写入元数据', typeof store.getMeta('faq_hash') === 'string' && (store.getMeta('faq_hash') as string).length > 0);
+
+  // 条数不变，但第 1 条的答案文字改了
+  const changed = FAQS.map(f => (f.id === 1 ? { ...f, answer: '答案改过了' } : f));
+  await indexFaqs(store, embedder as any, changed, { model: 'embo-01' });
+  check('内容变化触发重建', calls === 2, `embedder 被调用 ${calls} 次`);
+
+  // 内容没变 → 不重建
+  await indexFaqs(store, embedder as any, changed, { model: 'embo-01' });
+  check('内容未变不重复重建', calls === 2, `embedder 被调用 ${calls} 次`);
+}
+
 console.log(`\n${failures === 0 ? '全部通过' : `${failures} 个断言失败`}（${checks - failures}/${checks}）`);
 process.exit(failures === 0 ? 0 : 1);

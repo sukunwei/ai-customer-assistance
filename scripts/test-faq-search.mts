@@ -75,5 +75,42 @@ console.log('7. 边界输入不崩');
   check('超长字符串不崩', Array.isArray(rankFaq(FAQS, '订'.repeat(500))));
 }
 
+console.log('8. 强命中 / 弱命中分层');
+{
+  // 强命中：关键词精确匹配 —— 必须保留
+  const strong = rankFaq(FAQS, '我有多少订单', { limit: 3 });
+  check('强命中被保留', strong.length > 0, String(strong.length));
+  check('Top1 是订单查询类', strong[0]?.question.includes('查询我的订单'), strong[0]?.question);
+
+  // 弱命中：只有 2-gram 偶然匹配 —— 必须丢弃（真假混杂，交给向量路）
+  const weak1 = rankFaq(FAQS, '钱什么时候能回来', { limit: 3 });
+  check('弱命中「钱什么时候能回来」被丢弃', weak1.length === 0, weak1.map(f => f.question).join(' / '));
+
+  const weak2 = rankFaq(FAQS, '手机号能不能换', { limit: 3 });
+  check('弱命中「手机号能不能换」被丢弃', weak2.length === 0, weak2.map(f => f.question).join(' / '));
+
+  const weak3 = rankFaq(FAQS, '我要找真人客服', { limit: 3 });
+  check('弱命中「我要找真人客服」被丢弃', weak3.length === 0, weak3.map(f => f.question).join(' / '));
+}
+
+console.log('9. 短 query 的反向匹配也算强命中');
+{
+  // 「多久退」只能靠「短 query 被 keyword 包含」命中关键词「多久退款」
+  const out = rankFaq(FAQS, '多久退', { limit: 3 });
+  check(
+    '纯反向匹配不被过滤',
+    out.some(f => f.question.includes('到账')),
+    out.map(f => f.question).join(' / ')
+  );
+}
+
+console.log('10. minStrongHits 可调');
+{
+  const loose = rankFaq(FAQS, '钱什么时候能回来', { limit: 3, minStrongHits: 0 });
+  check('minStrongHits=0 时弱命中回来', loose.length > 0, String(loose.length));
+  const strict = rankFaq(FAQS, '钱什么时候能回来', { limit: 3, minStrongHits: 1 });
+  check('minStrongHits=1 时弱命中被滤', strict.length === 0, strict.map(f => f.question).join(' / '));
+}
+
 console.log(`\n${failures === 0 ? '全部通过' : `${failures} 个断言失败`}（${checks - failures}/${checks}）`);
 process.exit(failures === 0 ? 0 : 1);

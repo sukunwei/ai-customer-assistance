@@ -11,6 +11,7 @@
  *  3. **每次查询一次网络往返**：实测 250~700ms。
  */
 import type { VectorStore } from './vectorStore.js';
+import { createMemoryMetaStore, type MetaStore } from './ragMeta.js';
 
 export interface VectorizeConfig {
   /** Cloudflare Account ID */
@@ -30,8 +31,8 @@ export interface VectorizeConfig {
 const DEFAULT_API_URL = 'https://api.cloudflare.com/client/v4';
 const DEFAULT_READY_DELAY = 120_000;
 
-export function createVectorizeStore(config: VectorizeConfig): VectorStore {
-  const meta = new Map<string, string>();
+export function createVectorizeStore(config: VectorizeConfig, meta?: MetaStore): VectorStore {
+  // 默认进程内（测试用）；生产环境由调用方注入持久化的 MetaStore
   let currentDim: number | null = null;
   /** 最近一次写入的时间；Vectorize 写入是异步的，这段时间内查询结果不可信 */
   let lastUpsertAt = 0;
@@ -41,6 +42,7 @@ export function createVectorizeStore(config: VectorizeConfig): VectorStore {
   const indexesPath = `${apiUrl}/accounts/${config.accountId}/vectorize/v2/indexes`;
   const indexPath = `${indexesPath}/${config.indexName}`;
   const readyDelay = config.readyDelayMs ?? DEFAULT_READY_DELAY;
+  const metaStore = meta ?? createMemoryMetaStore();
 
   /** 统一的请求封装：失败一律返回 null，绝不抛错 */
   const request = async (
@@ -195,16 +197,16 @@ export function createVectorizeStore(config: VectorizeConfig): VectorStore {
     },
 
     count(): number {
-      const recorded = Number(meta.get('faq_count') || '0');
+      const recorded = Number(metaStore.get('faq_count') || '0');
       return Number.isFinite(recorded) ? recorded : 0;
     },
 
     getMeta(key: string): string | null {
-      return meta.get(key) ?? null;
+      return metaStore.get(key);
     },
 
     setMeta(key: string, value: string): void {
-      meta.set(key, value);
+      metaStore.set(key, value);
     },
   };
 }

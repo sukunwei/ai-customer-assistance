@@ -8,6 +8,7 @@ import { rankFaq } from "./faqSearch.js";
 import { toSimplified } from "./text.js";
 import { embedTexts } from "./embeddings.js";
 import { createVectorStore, type VectorStore } from "./vectorStore.js";
+import { createDbMetaStore } from "./ragMeta.js";
 import { createVectorizeStore } from "./vectorizeStore.js";
 import { retrieveFaqs } from "./retriever.js";
 import { getRagConfig } from "./ragConfig.js";
@@ -67,10 +68,12 @@ let vectorStoreCache: { kind: string; store: VectorStore } | null = null;
 
 function getVectorStore(config: ReturnType<typeof getRagConfig>): VectorStore {
   if (vectorStoreCache?.kind === config.vectorStore) return vectorStoreCache.store;
+  // 元数据持久化在本地 SQLite：重启后索引仍然有效，不会每次启动都重新 embedding
+  const metaStore = createDbMetaStore(db.default);
   const store: VectorStore =
     config.vectorStore === 'vectorize'
-      ? createVectorizeStore(config.vectorize)
-      : createVectorStore(db.default);
+      ? createVectorizeStore(config.vectorize, metaStore)
+      : createVectorStore(db.default, metaStore);
   vectorStoreCache = { kind: config.vectorStore, store };
   return store;
 }
@@ -1064,7 +1067,8 @@ app.listen(PORT, () => {
           { model: ragConfig.embedding.model }
         );
         if (written > 0) {
-          console.log(`[Vector] 已索引 ${written} 条 FAQ`);
+          // 跳过重建时也会走这里（indexFaqs 返回已有条数），所以措辞用「就绪」
+          console.log(`[Vector] FAQ 向量索引就绪（${written} 条）`);
         } else {
           console.warn('[Vector] FAQ 索引未完成，向量检索将退化为关键词检索');
         }

@@ -17,6 +17,8 @@ export interface IndexableFaq {
   id: number;
   question: string;
   answer: string;
+  /** FAQ 的关键词表，参与内容哈希（改了关键词也要重建索引） */
+  keywords?: string | null;
 }
 
 export type Embedder = (
@@ -42,6 +44,28 @@ function buildIndexText(faq: IndexableFaq): string {
  *  - 记录的模型和当前模型不一致（换过 embedding 模型）
  *  - 索引是空的
  */
+/** FNV-1a 32 位哈希，用于稳定地标识 FAQ 内容 */
+function hashString(text: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16);
+}
+
+/**
+ * FAQ 内容哈希。
+ *
+ * 只比条数不够：条数不变但答案文字改了（或关键词改了），索引里留的还是旧向量。
+ */
+export function computeFaqHash(faqs: IndexableFaq[]): string {
+  const text = faqs
+    .map(faq => `${faq.id}\u0000${faq.question}\u0000${faq.answer}\u0000${faq.keywords ?? ''}`)
+    .join('\u0001');
+  return hashString(text);
+}
+
 export function needsReindex(
   store: VectorStore,
   faqs: IndexableFaq[],
@@ -49,6 +73,8 @@ export function needsReindex(
 ): boolean {
   if (store.count() !== faqs.length) return true;
   if (model && store.getMeta('embedding_model') !== model) return true;
+  // 内容变了（条数不变）同样要重建，否则索引里是过期向量
+  if (store.getMeta('faq_hash') !== computeFaqHash(faqs)) return true;
   return false;
 }
 
@@ -101,6 +127,7 @@ export async function indexFaqs(
 
     if (options.model) store.setMeta('embedding_model', options.model);
     store.setMeta('faq_count', String(faqs.length));
+    store.setMeta('faq_hash', computeFaqHash(faqs));
     store.setMeta('indexed_at', new Date().toISOString());
 
     return written;
