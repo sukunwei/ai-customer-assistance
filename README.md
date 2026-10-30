@@ -97,6 +97,9 @@ FAQ 内容改了（哈希变了）才会重建。
 | UI | TDesign React 组件库 |
 | AI | Claude Code Agent SDK (`@anthropic-ai/claude-agent-sdk`) |
 | 模型 | MiniMax（Anthropic 兼容端点 `https://api.minimax.io/anthropic`） |
+| 嵌入模型 | Cloudflare Workers AI（`@cf/baai/bge-m3`，1024 维多语言）；也可换 MiniMax 或任意 OpenAI 兼容服务 |
+| 向量库 | Cloudflare Vectorize（托管向量数据库，REST API 直连）或 sqlite-vec（本地 SQLite 扩展，136KB） |
+| 检索 | 关键词打分 + 向量召回，**RRF 融合** |
 | 数据库 | SQLite (`better-sqlite3`) |
 
 ## 环境要求
@@ -104,6 +107,7 @@ FAQ 内容改了（哈希变了）才会重建。
 - **Node.js** ≥ 18（推荐使用 22.x）
 - **npm** 或 **yarn**
 - **MiniMax API Key**（用于 AI 对话功能，配置见下方「配置说明」）
+- **Cloudflare 账号**（仅在启用 Cloudflare Vectorize 向量检索时需要：Workers AI 做嵌入 + Vectorize 存向量）
 
 ## 快速开始
 
@@ -305,7 +309,7 @@ FAQ 检索不是拿整句话做 `LIKE '%整句%'`，而是**切词后按命中�
 用户提问 → 繁简归一化 → 意图识别
                               ↓
               ┌───────────────┴───────────────┐
-        关键词检索(rankFaq)              向量检索(embedding + sqlite-vec)
+        关键词检索(rankFaq)       向量检索(embedding + 向量库)
               └───────────────┬───────────────┘
                         RRF 融合 → Top-K → FAQ 上下文 → LLM
 ```
@@ -319,6 +323,41 @@ FAQ 检索不是拿整句话做 `LIKE '%整句%'`，而是**切词后按命中�
 
 > Chroma 实测要 551MB 磁盘 + 一个常驻的 Python 进程，对这个规模是纯负担，所以没选。
 > `VectorStore` 是统一接口，加后端不用改检索层。
+
+#### Cloudflare Vectorize 是什么
+
+[Vectorize](https://developers.cloudflare.com/vectorize/) 是 Cloudflare 提供的**托管向量数据库**，
+和 Workers AI 同属 Cloudflare AI 平台，因此**嵌入模型和向量库可以用同一个 token**，
+不用额外申请第二份密钥、也不用在本机跑任何东西。
+
+本项目通过它的 REST API 直连（**不需要部署 Cloudflare Worker**）：
+
+```
+建索引   POST /accounts/{id}/vectorize/v2/indexes
+         {name, config:{dimensions:1024, metric:'cosine'}}
+写入     POST /accounts/{id}/vectorize/v2/indexes/{name}/upsert   (NDJSON)
+查询     POST /accounts/{id}/vectorize/v2/indexes/{name}/query
+         {vector:[...], topK:5} → {result:{matches:[{id, score}]}}
+```
+
+**免费额度**（Workers Free 计划，实测够用）：
+
+| 项目 | 免费额度 | 本项目用量 |
+|---|---|---|
+| 查询向量维度 | 30M / 月 | 每次查询 `(16 条 + 1) × 1024` ≈ 17K → 约 1,700 次查询/月 |
+| 存储向量维度 | 5M | 16 条 × 1024 = 16K（占 0.3%） |
+| 索引数 | 100 / 账号 | 1 个 |
+
+**限制**：单向量最大 1536 维（bge-m3 是 1024 维 ✓）、向量 ID ≤ 64 字节、
+`topK` 带 metadata ≤ 50、HTTP upsert 单批 ≤ 5000 条。
+
+**三个必须知道的坑**（实测踩过，都已在代码里处理）：
+
+| 坑 | 表现 | 本项目的处理 |
+|---|---|---|
+| **写入是异步的** | 向量先写 WAL，异步 job 重建索引，**实测约 60~100 秒后才可查** | 记住最近一次写入时间，这段时间内查询直接降级为关键词，避免把「还没生效」误判成「没命中」 |
+| **索引维度创建后不可改** | 换 embedding 模型（维度变了）无法直接改 | 换模型需要删索引重建；本地 sqlite-vec 后端则是自动重建 |
+| **每次查询一次网络往返** | 实测 250~700ms | 相对 LLM 生成的数秒可接受；连续失败 3 次后熔断 60 秒 |
 
 **向量维度不写死**：首次调用 embedding 后按返回向量的实际长度确定，维度变化会自动重建索引（Vectorize 的索引维度创建后不可改，换模型需要删索引重建）。
 
@@ -348,12 +387,13 @@ EMBEDDING_API_KEY=cfut-...
 # VECTOR_STORE=vectorize 时还需要
 VECTORIZE_ACCOUNT_ID=<ACCOUNT_ID>
 VECTORIZE_INDEX=scs-faq
+# VECTORIZE_API_KEY 不填则复用上面的 EMBEDDING_API_KEY（同一个 token 两边都能用）
 ```
 
-> ⚠️ **Cloudflare token 的权限**：Workers AI 需要 API Token 带
-> `Account → Workers AI → Read` 和 `Account → Account Settings → Read`，
+> ⚠️ **Cloudflare token 的权限**：需要同时勾选
+> `Account → Workers AI → Read`（做嵌入）和 `Account → Vectorize → Edit`（用向量库），
 > 且 Account Resources 里要包含目标账号。只建 token 不授权会得到 401
-> （`/accounts` 返回空数组就是这个症状）。
+> （症状是 `/accounts` 返回空数组，说明 token 没绑定到目标账号）。
 
 **换用 MiniMax**（需该 key 有 embedding 配额）：
 
