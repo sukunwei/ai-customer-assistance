@@ -1,17 +1,14 @@
 /**
  * Provider 抽象层
  *
- * 目前支持两套 Agent SDK：
- *  - claude   : Claude Code Agent SDK (@anthropic-ai/claude-agent-sdk)，默认接入 MiniMax 的 Anthropic 兼容端点
- *  - codebuddy: CodeBuddy Agent SDK (@tencent-ai/agent-sdk)
+ * 当前使用 Claude Code Agent SDK (@anthropic-ai/claude-agent-sdk)，
+ * 默认接入 MiniMax 的 Anthropic 兼容端点。
  *
- * 两个 SDK 的 query() 签名一致，但事件流细节略有差异，这里统一归一化成 AgentEvent，
- * 上层（/api/chat）不需要关心当前用的是哪一家。
+ * SDK 的事件流在这里统一归一化成 AgentEvent，上层（/api/chat）不需要关心细节。
  */
 import { query as claudeQuery, BUILTIN_TOOL_NAMES } from '@anthropic-ai/claude-agent-sdk';
-import { query as codebuddyQuery, unstable_v2_authenticate } from '@tencent-ai/agent-sdk';
 
-export type ProviderId = 'claude' | 'codebuddy';
+export type ProviderId = 'claude';
 
 export interface ProviderMeta {
   id: ProviderId;
@@ -26,12 +23,6 @@ export const PROVIDERS: Record<ProviderId, ProviderMeta> = {
     name: 'Claude Code (MiniMax)',
     description: 'Claude Code Agent SDK，通过 Anthropic 兼容端点调用 MiniMax 模型',
     defaultModel: 'MiniMax-M3.1-Flash',
-  },
-  codebuddy: {
-    id: 'codebuddy',
-    name: 'CodeBuddy',
-    description: 'CodeBuddy Agent SDK，需要 CodeBuddy CLI 登录或 CODEBUDDY_API_KEY',
-    defaultModel: 'claude-sonnet-4',
   },
 };
 
@@ -109,7 +100,7 @@ export async function fetchClaudeModels(config: ClaudeConfig = getClaudeConfig()
 // ==================== Provider 选择 ====================
 
 export function isProviderId(value: unknown): value is ProviderId {
-  return value === 'claude' || value === 'codebuddy';
+  return value === 'claude';
 }
 
 /**
@@ -329,48 +320,15 @@ async function* runClaudeProvider(prompt: string, options: AgentRunOptions): Asy
   yield* normalizeStream(stream as AsyncIterable<any>);
 }
 
-async function* runCodebuddyProvider(prompt: string, options: AgentRunOptions): AsyncGenerator<AgentEvent> {
-  const codebuddyOptions: Record<string, unknown> = {
-    cwd: options.cwd,
-    model: options.model,
-    maxTurns: options.maxTurns,
-    systemPrompt: options.systemPrompt,
-    permissionMode: options.permissionMode,
-    canUseTool: async (toolName: string, input: Record<string, unknown>, opts: any) => {
-      const outcome = await options.canUseTool(toolName, input, { toolUseID: opts?.toolUseID });
-      return outcome as any;
-    },
-  };
-
-  if (options.resume) {
-    codebuddyOptions.resume = options.resume;
-  }
-
-  if (options.abortController) {
-    codebuddyOptions.abortController = options.abortController;
-  }
-
-  if (options.disableTools) {
-    // CodeBuddy SDK 没有 tools 白名单选项，只能靠 disallowedTools + 服务端的
-    // canUseTool 一律 deny 双保险
-    codebuddyOptions.disallowedTools = [...BUILTIN_TOOL_NAMES];
-  }
-
-  const stream = codebuddyQuery({ prompt, options: codebuddyOptions as any });
-  yield* normalizeStream(stream as AsyncIterable<any>);
-}
-
 /**
  * 统一的 Agent 调用入口
  */
 export function runAgent(
-  provider: ProviderId,
+  _provider: ProviderId,
   prompt: string,
   options: AgentRunOptions
 ): AsyncGenerator<AgentEvent> {
-  return provider === 'codebuddy'
-    ? runCodebuddyProvider(prompt, options)
-    : runClaudeProvider(prompt, options);
+  return runClaudeProvider(prompt, options);
 }
 
 // ==================== 登录状态检查 ====================
@@ -420,82 +378,6 @@ export function checkClaudeAuth(): ProviderAuthStatus {
     };
   } else {
     status.error = '未配置 ANTHROPIC_AUTH_TOKEN，请在设置页填写 MiniMax API Key';
-  }
-
-  return status;
-}
-
-/**
- * 只检查 CodeBuddy 的环境变量配置，不触发 CLI 登录探测。
- * CLI 探测会访问 CodeBuddy 认证服务，可能长时间无响应，因此只在真正使用
- * CodeBuddy provider 时才调用。
- */
-export function checkCodebuddyEnv(): ProviderAuthStatus {
-  const status: ProviderAuthStatus = {
-    provider: 'codebuddy',
-    isLoggedIn: false,
-    envConfigured: false,
-    cliConfigured: false,
-    envVars: {},
-  };
-
-  const apiKey = process.env.CODEBUDDY_API_KEY;
-  const authToken = process.env.CODEBUDDY_AUTH_TOKEN;
-  const internetEnv = process.env.CODEBUDDY_INTERNET_ENVIRONMENT;
-  const baseUrl = process.env.CODEBUDDY_BASE_URL;
-
-  if (apiKey || authToken) {
-    status.envConfigured = true;
-    status.isLoggedIn = true;
-    status.method = 'env';
-    if (apiKey) {
-      status.envVars!.apiKey = mask(apiKey);
-      status.apiKey = status.envVars!.apiKey;
-    }
-    if (authToken) {
-      status.envVars!.authToken = mask(authToken);
-    }
-    if (internetEnv) {
-      status.envVars!.internetEnv = internetEnv;
-    }
-    if (baseUrl) {
-      status.envVars!.baseUrl = baseUrl;
-    }
-  }
-
-  return status;
-}
-
-export async function checkCodebuddyAuth(timeoutMs = 5000): Promise<ProviderAuthStatus> {
-  const status = checkCodebuddyEnv();
-
-  try {
-    let needsLogin = false;
-    const result = await Promise.race([
-      unstable_v2_authenticate({
-        environment: 'external',
-        onAuthUrl: async () => {
-          needsLogin = true;
-        },
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('CodeBuddy 登录状态检查超时')), timeoutMs)
-      ),
-    ]);
-
-    if (!needsLogin) {
-      status.isLoggedIn = true;
-      status.cliConfigured = true;
-      status.method = status.envConfigured ? 'env' : 'cli';
-    }
-  } catch (error: any) {
-    if (status.envConfigured) {
-      status.isLoggedIn = true;
-      status.method = 'env';
-    } else {
-      status.error = error?.message || String(error);
-      status.method = 'none';
-    }
   }
 
   return status;

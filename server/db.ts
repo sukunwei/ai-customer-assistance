@@ -95,7 +95,7 @@ try {
   // 忽略错误（列可能已存在）
 }
 
-// provider 列：历史会话都来自 CodeBuddy
+// provider 列：历史会话都来自早期版本，统一标记为 claude
 try {
   const tableInfo = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
   const hasProvider = tableInfo.some(col => col.name === 'provider');
@@ -103,7 +103,7 @@ try {
     db.exec("ALTER TABLE sessions ADD COLUMN provider TEXT");
     console.log("[DB] Added provider column to sessions table");
   }
-  db.exec("UPDATE sessions SET provider = 'codebuddy' WHERE provider IS NULL");
+  db.exec("UPDATE sessions SET provider = 'claude' WHERE provider IS NULL OR provider = 'codebuddy'");
 } catch (e) {
   // 忽略错误（列可能已存在）
 }

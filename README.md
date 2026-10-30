@@ -10,7 +10,7 @@
 - 💬 **快捷提问** — 首页提供 6 个常用问题快捷入口，一键发送
 - ⭐ **满意度评价** — 每轮对话支持 1-5 星评分 + 文字评价
 - 📊 **管理后台** — 独立管理页面，查看会话统计、满意度分布、意图分析
-- 🔀 **双 Provider** — Claude Code (MiniMax) 与 CodeBuddy 可随时切换
+- 🔀 **Provider 抽象** — 统一的事件流归一化层，将来接入新的 Agent SDK 只需新增一个实现
 - 🔒 **权限控制** — 支持 4 种权限模式，工具调用可实时弹窗确认
 - 💾 **数据持久化** — SQLite 本地数据库，会话和消息自动保存
 
@@ -26,7 +26,7 @@ flowchart TD
     INTENT --> RETRIEVE["FAQ 混合检索<br/>retrieveFaqs"]
     RETRIEVE --> CTX["拼接 FAQ 上下文"]
     CTX --> PROMPT["构建系统提示词<br/>服务范围 + 输出边界 + FAQ 上下文"]
-    PROMPT --> AGENT["调用 Agent SDK<br/>Claude Code SDK / CodeBuddy"]
+    PROMPT --> AGENT["调用 Agent SDK<br/>Claude Code SDK"]
     AGENT --> STREAM["SSE 事件流<br/>init / text / done"]
     STREAM --> RENDER["前端渲染答复"]
     STREAM --> SAVE["写入 messages 表"]
@@ -95,7 +95,7 @@ FAQ 内容改了（哈希变了）才会重建。
 | 后端 | Node.js + Express + TypeScript |
 | 前端 | React 18 + TypeScript + Vite |
 | UI | TDesign React 组件库 |
-| AI | Claude Code Agent SDK (`@anthropic-ai/claude-agent-sdk`)，备选 CodeBuddy Agent SDK (`@tencent-ai/agent-sdk`) |
+| AI | Claude Code Agent SDK (`@anthropic-ai/claude-agent-sdk`) |
 | 模型 | MiniMax（Anthropic 兼容端点 `https://api.minimax.io/anthropic`） |
 | 数据库 | SQLite (`better-sqlite3`) |
 
@@ -104,7 +104,6 @@ FAQ 内容改了（哈希变了）才会重建。
 - **Node.js** ≥ 18（推荐使用 22.x）
 - **npm** 或 **yarn**
 - **MiniMax API Key**（用于 AI 对话功能，配置见下方「配置说明」）
-- 使用 CodeBuddy 作为备用 Provider 时，需 **CodeBuddy CLI** 已登录
 
 ## 快速开始
 
@@ -205,8 +204,8 @@ npm start
 |------|------|------|
 | `/api/health` | GET | 健康检查 |
 | `/api/providers` | GET | 获取可用的 Agent Provider 列表与当前生效的 Provider |
-| `/api/check-login` | GET | 检查 Provider 鉴权状态（`?provider=claude\|codebuddy`） |
-| `/api/models` | GET | 获取可用模型列表（`?provider=claude\|codebuddy`） |
+| `/api/check-login` | GET | 检查 Provider 鉴权状态 |
+| `/api/models` | GET | 获取可用模型列表 |
 | `/api/sessions` | GET | 获取所有会话 |
 | `/api/sessions` | POST | 创建新会话 |
 | `/api/sessions/:id` | GET | 获取单个会话详情 |
@@ -223,15 +222,14 @@ npm start
 
 ### Provider 选择
 
-应用支持两套 Agent SDK，可在「设置」页面或环境变量中切换：
+应用通过 Provider 抽象层调用 Agent SDK，当前实现：
 
 | Provider | SDK | 说明 |
 |----------|-----|------|
 | `claude`（默认） | `@anthropic-ai/claude-agent-sdk` | Claude Code 运行时，通过 Anthropic 兼容端点调用 MiniMax 模型 |
-| `codebuddy` | `@tencent-ai/agent-sdk` | CodeBuddy 运行时，需要 CodeBuddy CLI 登录或 API Key |
 
 ```bash
-AGENT_PROVIDER=claude   # claude | codebuddy
+AGENT_PROVIDER=claude
 ```
 
 ### Claude Code (MiniMax) 认证
@@ -251,24 +249,6 @@ ANTHROPIC_MODEL=MiniMax-M3.1-Flash
 
 > Claude Code Agent SDK 会以内置的 Claude Code 运行时启动子进程，并继承服务进程的环境变量，
 > 因此设置页写入的 `ANTHROPIC_*` 会立即生效。模型列表通过 `${ANTHROPIC_BASE_URL}/v1/models` 实时拉取。
-
-### CodeBuddy 认证（备用 Provider）
-
-**方式一：使用 CodeBuddy CLI 登录**
-
-```bash
-codebuddy login
-npm run dev
-```
-
-**方式二：环境变量配置**
-
-```bash
-CODEBUDDY_API_KEY=your_api_key
-CODEBUDDY_AUTH_TOKEN=your_auth_token
-CODEBUDDY_INTERNET_ENVIRONMENT=external
-CODEBUDDY_BASE_URL=https://api.example.com
-```
 
 ### 权限模式
 
@@ -444,13 +424,6 @@ npm install -g windows-build-tools
 Claude Code (MiniMax) Provider 需要配置 `ANTHROPIC_AUTH_TOKEN`（MiniMax API Key），
 在应用「设置」页面填写，或通过环境变量配置后重启服务。
 
-若使用 CodeBuddy Provider，则需要先登录 CodeBuddy CLI：
-
-```bash
-codebuddy login
-```
-
-然后在应用「设置」页面确认登录状态。
 
 ## License
 

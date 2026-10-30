@@ -8,7 +8,6 @@ import {
   Popconfirm,
   MessagePlugin,
   Loading,
-  Link,
   Tag,
   Select
 } from 'tdesign-react';
@@ -138,16 +137,6 @@ export function SettingsPage({
   // 各 provider 的登录状态
   const [providerStatus, setProviderStatus] = useState<Record<string, LoginStatus>>({});
 
-  // 环境变量配置
-  const [showEnvConfig, setShowEnvConfig] = useState(false);
-  const [envConfig, setEnvConfig] = useState({
-    apiKey: '',
-    authToken: '',
-    internetEnv: '' as '' | 'internal' | 'iOA',
-    baseUrl: '',
-  });
-  const [savingEnv, setSavingEnv] = useState(false);
-
   // Claude Code (MiniMax) 环境变量配置
   const [showClaudeEnvConfig, setShowClaudeEnvConfig] = useState(false);
   const [claudeEnvConfig, setClaudeEnvConfig] = useState({
@@ -179,7 +168,6 @@ export function SettingsPage({
       if (data.providers) {
         setProviderStatus({
           claude: { ...data.providers.claude, checking: false },
-          codebuddy: { ...data.providers.codebuddy, checking: false },
         });
       }
     } catch (error: any) {
@@ -192,44 +180,7 @@ export function SettingsPage({
   }, [effectiveProvider]);
 
   // 保存环境变量配置
-  const saveEnvConfig = async () => {
-    // 至少需要配置一个有效的值
-    const hasAnyConfig = envConfig.apiKey.trim() || envConfig.authToken.trim();
-    if (!hasAnyConfig) {
-      MessagePlugin.warning('请至少配置 API Key 或 Auth Token');
-      return;
-    }
 
-    setSavingEnv(true);
-    try {
-      const response = await fetch('/api/save-env-config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKey: envConfig.apiKey.trim() || undefined,
-          authToken: envConfig.authToken.trim() || undefined,
-          internetEnv: envConfig.internetEnv || undefined,
-          baseUrl: envConfig.baseUrl.trim() || undefined,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        MessagePlugin.success(data.message);
-        setShowEnvConfig(false);
-        setEnvConfig({ apiKey: '', authToken: '', internetEnv: '', baseUrl: '' });
-        // 重新检查登录状态
-        checkLoginStatus();
-      } else {
-        MessagePlugin.error(data.error || '保存失败');
-      }
-    } catch (error: any) {
-      MessagePlugin.error(error?.message || '保存失败');
-    } finally {
-      setSavingEnv(false);
-    }
-  };
 
   // 保存 Claude Code (MiniMax) 环境变量配置
   const saveClaudeEnvConfig = async () => {
@@ -366,7 +317,7 @@ export function SettingsPage({
                 className="text-sm mt-1"
                 style={{ color: 'var(--td-text-color-secondary)' }}
               >
-                支持 Claude Code (MiniMax) 与 CodeBuddy 双 Provider
+                当前使用 Claude Code Agent SDK，通过 Anthropic 兼容端点调用 MiniMax 模型
               </p>
             </div>
             <Button
@@ -394,7 +345,7 @@ export function SettingsPage({
               style={{ width: '100%' }}
               options={[
                 {
-                  label: `跟随服务端默认（${serverProvider === 'claude' ? 'Claude Code (MiniMax)' : 'CodeBuddy'}）`,
+                  label: `跟随服务端默认（Claude Code (MiniMax)）`,
                   value: '',
                 },
                 ...providers.map(p => ({ label: p.name, value: p.id })),
@@ -560,148 +511,6 @@ export function SettingsPage({
             )}
           </div>
 
-          {/* CodeBuddy 环境变量配置 */}
-          <div className="mb-6">
-            <h3
-              className="text-sm font-medium mb-3"
-              style={{ color: 'var(--td-text-color-secondary)' }}
-            >
-              方式二：CodeBuddy 环境变量
-            </h3>
-
-            {showEnvConfig ? (
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label
-                      className="text-xs block mb-1"
-                      style={{ color: 'var(--td-text-color-placeholder)' }}
-                    >
-                      CODEBUDDY_API_KEY
-                    </label>
-                    <Input
-                      type="password"
-                      size="small"
-                      value={envConfig.apiKey}
-                      onChange={(v) => setEnvConfig(prev => ({ ...prev, apiKey: v as string }))}
-                      placeholder="API 密钥（推荐）"
-                    />
-                  </div>
-                  <div>
-                    <label
-                      className="text-xs block mb-1"
-                      style={{ color: 'var(--td-text-color-placeholder)' }}
-                    >
-                      CODEBUDDY_AUTH_TOKEN
-                    </label>
-                    <Input
-                      type="password"
-                      size="small"
-                      value={envConfig.authToken}
-                      onChange={(v) => setEnvConfig(prev => ({ ...prev, authToken: v as string }))}
-                      placeholder="认证令牌"
-                    />
-                  </div>
-                  <div>
-                    <label
-                      className="text-xs block mb-1"
-                      style={{ color: 'var(--td-text-color-placeholder)' }}
-                    >
-                      CODEBUDDY_INTERNET_ENVIRONMENT
-                    </label>
-                    <Select
-                      size="small"
-                      value={envConfig.internetEnv}
-                      onChange={(v) => setEnvConfig(prev => ({ ...prev, internetEnv: v as any }))}
-                      placeholder="网络环境（可选）"
-                      clearable
-                      options={[
-                        { label: 'internal', value: 'internal' },
-                        { label: 'iOA', value: 'iOA' },
-                      ]}
-                    />
-                  </div>
-                  <div>
-                    <label
-                      className="text-xs block mb-1"
-                      style={{ color: 'var(--td-text-color-placeholder)' }}
-                    >
-                      CODEBUDDY_BASE_URL
-                    </label>
-                    <Input
-                      size="small"
-                      value={envConfig.baseUrl}
-                      onChange={(v) => setEnvConfig(prev => ({ ...prev, baseUrl: v as string }))}
-                      placeholder="自定义 URL（可选）"
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    size="small"
-                    theme="primary"
-                    onClick={saveEnvConfig}
-                    loading={savingEnv}
-                  >
-                    保存
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="text"
-                    onClick={() => {
-                      setShowEnvConfig(false);
-                      setEnvConfig({ apiKey: '', authToken: '', internetEnv: '', baseUrl: '' });
-                    }}
-                  >
-                    取消
-                  </Button>
-                  <span
-                    className="text-xs"
-                    style={{ color: 'var(--td-text-color-placeholder)' }}
-                  >
-                    仅当前进程有效
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <Button
-                variant="outline"
-                size="small"
-                onClick={() => setShowEnvConfig(true)}
-              >
-                配置环境变量
-              </Button>
-            )}
-          </div>
-
-          {/* CLI 登录 */}
-          <div>
-            <h3
-              className="text-sm font-medium mb-3"
-              style={{ color: 'var(--td-text-color-secondary)' }}
-            >
-              方式三：CLI 登录
-            </h3>
-            <div className="flex items-center gap-3">
-              <code
-                className="px-3 py-1.5 rounded text-sm"
-                style={{
-                  backgroundColor: 'var(--td-bg-color-component)',
-                  color: 'var(--td-text-color-primary)'
-                }}
-              >
-                codebuddy
-              </code>
-              <Link
-                href="https://www.codebuddy.ai/docs/zh/cli/settings"
-                target="_blank"
-                theme="primary"
-                size="small"
-              >
-                查看文档
-              </Link>
-            </div>
-          </div>
 
           {loginStatus.error && !loginStatus.isLoggedIn && (
             <div
